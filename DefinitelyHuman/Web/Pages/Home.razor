@@ -34,11 +34,11 @@
             <tbody>
                 @foreach (var msg in _messages)
                 {
-                    <tr class="@(msg.IsOwnMessage ? "own-message" : "")">
+                    <tr class="@RowClass(msg)">
                         <td class="col-time">@msg.Timestamp.ToString("HH:mm:ss")</td>
                         <td class="col-channel">@msg.Channel</td>
                         <td class="col-nick">@msg.Nick</td>
-                        <td class="col-text">@msg.Text</td>
+                        <td class="col-text">@RenderText(msg.Text)</td>
                     </tr>
                 }
             </tbody>
@@ -117,6 +117,33 @@
             .OrderBy(m => m.Timestamp)
             .Take(200)
             .ToListAsync();
+    }
+
+    // Row styling: the bot's own lines stay blue; an incoming line that names the bot gets the
+    // "mention" highlight, mirroring how an IRC client highlights your own nick.
+    private string RowClass(Message msg)
+    {
+        if (msg.IsOwnMessage) return "own-message";
+        return MentionsBot(msg.Text) ? "mention" : "";
+    }
+
+    private bool MentionsBot(string text) =>
+        !string.IsNullOrEmpty(Bot.Nick) && text.Contains(Bot.Nick, StringComparison.OrdinalIgnoreCase);
+
+    // Renders message text with any occurrence of the bot's nick wrapped in a highlight span.
+    // The text is HTML-encoded first, so this is safe to emit as markup.
+    private MarkupString RenderText(string text)
+    {
+        var encoded = System.Net.WebUtility.HtmlEncode(text);
+        if (string.IsNullOrEmpty(Bot.Nick))
+            return (MarkupString)encoded;
+
+        var pattern = System.Text.RegularExpressions.Regex.Escape(System.Net.WebUtility.HtmlEncode(Bot.Nick));
+        var highlighted = System.Text.RegularExpressions.Regex.Replace(
+            encoded, pattern,
+            m => $"<span class=\"hl-nick\">{m.Value}</span>",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        return (MarkupString)highlighted;
     }
 
     public void Dispose()

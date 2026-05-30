@@ -55,7 +55,7 @@ DefinitelyHuman/
       Error.razor, NotFound.razor
 ```
 
-**NetIRC** is included as a git submodule (`NetIRC/`) at tag v1.1.2, referenced as a project. It has been extended with SASL PLAIN authentication support and a `RawDataSent` event. Note: the submodule currently has **local modifications** for SASL/`RawDataSent` that are not yet committed inside the submodule — a fresh `--recursive` clone would not have them.
+**NetIRC** is the IRC client library, referenced as a NuGet package (`NetIRC` v1.1.2). The IRC plumbing lives in `Irc/IrcBot.cs` (connect, channel-join, message logging, sending).
 
 ## How the bot decides to talk
 
@@ -89,7 +89,7 @@ The bot is **state-driven, not event-driven**: it does not react to individual m
 
 ## Dependencies
 
-- **NetIRC** (v1.1.2, submodule) — IRC client with SASL support
+- **NetIRC** (v1.1.2, NuGet package) — IRC client
 - **Microsoft.Agents.AI.Anthropic** (1.8.0-preview) — Claude via Microsoft AI agent framework
 - **Microsoft.EntityFrameworkCore.Sqlite** — chat log persistence
 - **dotenv.net** — `.env` file loading

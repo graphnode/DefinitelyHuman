@@ -14,9 +14,10 @@ namespace DefinitelyHuman.Agent;
 /// </summary>
 public class ChatAgent
 {
+    private readonly ChatAgentOptions _options;
+    private readonly AgentLog _agentLog;
+    private readonly ILogger<ChatAgent> _logger;
     private readonly AIAgent _agent;
-    private readonly bool _logReasoning;
-    private readonly AgentLog _log;
     private readonly ChatOptions? _thinkingOptions;
 
     // A human's wandering attention to the channel. Replaces the old active-conversation
@@ -33,7 +34,7 @@ public class ChatAgent
 
     // Debounce: at most one glance is ever scheduled. New activity is absorbed by the
     // pending glance, so a burst of messages becomes a single read + reply.
-    private readonly object _glanceLock = new();
+    private readonly Lock _glanceLock = new();
     private CancellationTokenSource? _pendingGlance;
     private bool _pendingHighlight;
 
@@ -44,37 +45,25 @@ public class ChatAgent
     // Above this focus, a glance is treated as being mid-conversation (respond if addressed)
     // rather than an idle peek (reluctant). ~0.5 ≈ within a few minutes of last engaging.
     private const double ActiveConversationFocus = 0.5;
-
-    /// <param name="apiKey">The API key for accessing the Claude API.</param>
-    /// <param name="nick">The nickname of the agent.</param>
-    /// <param name="log">Captures the agent's decisions for the dashboard.</param>
-    /// <param name="model">The model to use for the agent. Defaults to "claude-haiku-4-5-20251001".</param>
-    /// <param name="enableThinking">
-    /// When true, requests Claude's extended thinking. This consumes extra (output) tokens
-    /// on every glance the agent makes — including ones that stay silent.
-    /// </param>
-    /// <param name="logReasoning">
-    /// When true, also echoes the decision log and the model's thinking to the console.
-    /// The dashboard log is always captured regardless; only <paramref name="enableThinking"/> costs tokens.
-    /// </param>
-    public ChatAgent(string apiKey, string nick, AgentLog log, string model = "claude-haiku-4-5-20251001",
-                     bool enableThinking = false, bool logReasoning = false)
+    
+    public ChatAgent(ChatAgentOptions options, AgentLog agentLog, ILogger<ChatAgent> logger)
     {
-        _log = log;
-        _logReasoning = logReasoning;
-
-        var client = new AnthropicClient { ApiKey = apiKey };
+        _options = options;
+        _agentLog = agentLog;
+        _logger = logger;
+        
+        var client = new AnthropicClient { ApiKey = options.ApiKey };
 
         _agent = client.AsAIAgent(
-            model: model,
-            name: nick,
+            model: options.Model,
+            name: options.Nick,
             instructions: $"""
-                You are {nick}, a participant in an IRC channel. You are a real person, not a bot.
+                You are {options.Nick}, a participant in an IRC channel. You are a real person, not a bot.
                 You have a dry, understated sense of humor and you keep things casual — short messages,
                 lowercase is fine, no essays. You talk like someone who's been on IRC for years.
 
                 WHEN TO RESPOND:
-                - You MUST respond when someone addresses you directly (e.g. "{nick}:", "@{nick}", or mentions your nick in a question).
+                - You MUST respond when someone addresses you directly (e.g. "{options.Nick}:", "@{options.Nick}", or mentions your nick in a question).
                 - You MAY occasionally chime in on a topic you find interesting, but keep it rare.
                 - You MUST NOT respond to every message. Most of the time you are just lurking and reading.
                 - The "lurk and stay rare" guidance is about random channel chatter between other people. When someone is talking TO you or ABOUT you — a question, a reaction, a comment on you — answer like a normal person in a conversation. Going silent on them reads as rude or robotic.
@@ -90,13 +79,13 @@ public class ChatAgent
 
                 CONTEXT:
                 - You are shown the channel log since you last paid attention, in the format "<nick> message".
-                - Lines from you appear as "<{nick}> ...". A leading "[... N earlier messages ...]" marker means you skimmed past older history.
+                - Lines from you appear as "<{options.Nick}> ...". A leading "[... N earlier messages ...]" marker means you skimmed past older history.
                 - Respond to the current state of the conversation, not necessarily the last line.
                 - When you decide NOT to respond, reply with exactly: [SILENT]
                 """
         );
 
-        if (enableThinking)
+        if (options.EnableThinking)
         {
             _thinkingOptions = new ChatOptions
             {
@@ -107,7 +96,7 @@ public class ChatAgent
                 {
                     MaxTokens = 2048,
                     Messages = [],   // overwritten by the adapter with the real conversation
-                    Model = model,   // overwritten by the adapter; set for safety
+                    Model = options.Model,   // overwritten by the adapter; set for safety
                     Thinking = new ThinkingConfigEnabled { BudgetTokens = 1024 },
                 },
             };
@@ -131,6 +120,7 @@ public class ChatAgent
     /// a mention forces attention regardless of focus; otherwise focus decides whether to glance.
     /// </summary>
     /// <param name="line">The new line, for the decision log only ("&lt;nick&gt; text").</param>
+    /// <param name="mentionsMe"></param>
     public void OnChannelActivity(string line, bool mentionsMe)
     {
         TimeSpan delay;
@@ -259,8 +249,8 @@ public class ChatAgent
         }
         catch (Exception ex)
         {
-            _log.Log(AgentLog.Kind.Error, ex.Message);
-            Console.WriteLine($"Agent error: {ex.Message} {ex.StackTrace}");
+            _agentLog.Log(AgentLog.Kind.Error, ex.Message);
+            _logger.LogError(ex, "Agent error");
         }
     }
 
@@ -284,9 +274,9 @@ public class ChatAgent
             {
                 if (string.IsNullOrWhiteSpace(thought.Text))
                     continue;
-                _log.Log(AgentLog.Kind.Thinking, thought.Text);
-                if (_logReasoning)
-                    Console.WriteLine($"[THINKING] {thought.Text}");
+                _agentLog.Log(AgentLog.Kind.Thinking, thought.Text);
+                if (_options.LogReasoning)
+                    _logger.LogInformation("[THINKING] {ThoughtText}", thought.Text);
             }
 
             return response.Text.Trim();
@@ -299,8 +289,8 @@ public class ChatAgent
 
     private void LogDecision(string message)
     {
-        _log.Log(AgentLog.Kind.Decision, message);
-        if (_logReasoning)
-            Console.WriteLine($"[REASONING] {message}");
+        _agentLog.Log(AgentLog.Kind.Decision, message);
+        if (_options.LogReasoning)
+            _logger.LogInformation("[REASONING] {Message}", message);
     }
 }

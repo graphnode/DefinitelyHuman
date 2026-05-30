@@ -9,14 +9,14 @@ public class IrcBotService(IrcBot bot, ChatAgent agent) : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        // Wire the agent's I/O: read the log since it was last involved, and speak to the channel.
+        // Wire the agent's I/O: read the log since it was last involved and speak to the channel.
         agent.Bind(
             readLog: since => bot.ReadLogSinceAsync(since, MaxBacklog),
-            send: text => bot.SendMessageAsync(text));
+            send: bot.SendMessageAsync);
 
         // The bot doesn't get handed messages — just a nudge that the log changed (plus the
         // line itself, for the decision log).
-        bot.ChannelActivity += (line, mentionsMe) => agent.OnChannelActivity(line, mentionsMe);
+        bot.ChannelActivity += agent.OnChannelActivity;
 
         await bot.ConnectAsync();
 

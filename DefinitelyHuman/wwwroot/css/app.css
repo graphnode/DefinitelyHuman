@@ -231,6 +231,23 @@ body {
     color: var(--own-msg);
 }
 
+/* Bot-nick highlight — mirrors an IRC client highlighting your own nick.
+   --own-msg is #7aa2f7 (122, 162, 247). */
+.message-log tr.mention {
+    background: rgba(122, 162, 247, 0.07);
+}
+
+.message-log tr.mention:hover {
+    background: rgba(122, 162, 247, 0.1);
+}
+
+.message-log .hl-nick {
+    background: rgba(122, 162, 247, 0.22);
+    color: var(--accent-hover);
+    border-radius: 3px;
+    padding: 0 3px;
+}
+
 /* Decision log */
 .message-log .col-kind {
     width: 90px;
