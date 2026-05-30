@@ -1,0 +1,25 @@
+@inherits LayoutComponentBase
+
+<div class="layout">
+    <nav class="sidebar">
+        <div class="sidebar-header">
+            <h1>DefinitelyHuman</h1>
+            <div class="subtitle">IRC Bot Dashboard</div>
+        </div>
+        <div class="sidebar-nav">
+            <NavLink href="/" Match="NavLinkMatch.All">
+                <span class="nav-icon">></span> Logs
+            </NavLink>
+            <NavLink href="/reasoning">
+                <span class="nav-icon">~</span> Reasoning
+            </NavLink>
+        </div>
+        <FocusWidget />
+        <div class="sidebar-footer">
+            <span class="status-dot online"></span> Running
+        </div>
+    </nav>
+    <div class="main-content">
+        @Body
+    </div>
+</div>

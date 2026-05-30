@@ -1,0 +1,126 @@
+@page "/"
+@rendermode InteractiveServer
+@using DefinitelyHuman.Data
+@using DefinitelyHuman.Irc
+@using Microsoft.EntityFrameworkCore
+@inject IrcBot Bot
+@inject IJSRuntime JS
+@implements IDisposable
+
+<div class="page-header">
+    <h2>Chat Logs</h2>
+</div>
+
+<div class="page-body" @ref="_logContainer">
+    @if (_messages == null)
+    {
+        <div class="loading">Loading...</div>
+    }
+    else if (_messages.Count == 0)
+    {
+        <div class="empty-state">No messages yet.</div>
+    }
+    else
+    {
+        <table class="message-log">
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Channel</th>
+                    <th>Nick</th>
+                    <th>Message</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var msg in _messages)
+                {
+                    <tr class="@(msg.IsOwnMessage ? "own-message" : "")">
+                        <td class="col-time">@msg.Timestamp.ToString("HH:mm:ss")</td>
+                        <td class="col-channel">@msg.Channel</td>
+                        <td class="col-nick">@msg.Nick</td>
+                        <td class="col-text">@msg.Text</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</div>
+
+@code {
+    private List<Message>? _messages;
+    private ElementReference _logContainer;
+    private bool _shouldScrollToBottom;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadMessages();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            Bot.MessageLogged += OnMessageLogged;
+            // Start at the newest messages.
+            await ScrollToBottomSafe();
+        }
+        else if (_shouldScrollToBottom)
+        {
+            _shouldScrollToBottom = false;
+            await ScrollToBottomSafe();
+        }
+    }
+
+    private async Task OnMessageLogged()
+    {
+        await InvokeAsync(async () =>
+        {
+            // Only stick to the bottom if the user is already there.
+            _shouldScrollToBottom = await IsAtBottomSafe();
+            await LoadMessages();
+            StateHasChanged();
+        });
+    }
+
+    // JS interop is best-effort: the circuit may be disconnected or unavailable
+    // when a message arrives, which must never crash the bot.
+    private async Task<bool> IsAtBottomSafe()
+    {
+        try
+        {
+            // Short timeout so a disconnected circuit fails fast instead of waiting
+            // out the 60s default JSInteropDefaultCallTimeout.
+            return await JS.InvokeAsync<bool>("chatScroll.isAtBottom", TimeSpan.FromSeconds(2), _logContainer);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private async Task ScrollToBottomSafe()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("chatScroll.scrollToBottom", TimeSpan.FromSeconds(2), _logContainer);
+        }
+        catch
+        {
+            // Circuit not ready/disconnected — ignore.
+        }
+    }
+
+    private async Task LoadMessages()
+    {
+        await using var db = new ChattingContext();
+        _messages = await db.Messages
+            .OrderBy(m => m.Timestamp)
+            .Take(200)
+            .ToListAsync();
+    }
+
+    public void Dispose()
+    {
+        Bot.MessageLogged -= OnMessageLogged;
+    }
+}

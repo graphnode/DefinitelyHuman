@@ -1,0 +1,50 @@
+@rendermode InteractiveServer
+@using DefinitelyHuman.Agent
+@inject ChatAgent Agent
+@implements IDisposable
+
+<div class="focus-widget">
+    <div class="focus-label">
+        <span>Focus</span>
+        <span class="focus-value">@_focus.ToString("P0")</span>
+    </div>
+    <div class="focus-bar">
+        <div class="focus-bar-fill" style="width:@(Pct)%; background:@BarColor;"></div>
+    </div>
+</div>
+
+@code {
+    private double _focus;
+    private Timer? _timer;
+
+    // Focus decays continuously, so we poll rather than react to events.
+    protected override void OnInitialized() => _focus = Agent.CurrentFocus;
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        // OnAfterRender only runs once the component is interactive (not during prerender),
+        // so the timer is created exactly once, in the live circuit.
+        if (!firstRender)
+            return;
+
+        _timer = new Timer(_ =>
+        {
+            _ = InvokeAsync(() =>
+            {
+                _focus = Agent.CurrentFocus;
+                StateHasChanged();
+            });
+        }, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+    }
+
+    private int Pct => (int)Math.Round(_focus * 100);
+
+    private string BarColor => _focus switch
+    {
+        >= 0.5 => "var(--green)",   // active-conversation territory
+        >= 0.15 => "var(--orange)", // noticing, but fading
+        _ => "var(--text-muted)",   // basically not watching
+    };
+
+    public void Dispose() => _timer?.Dispose();
+}
