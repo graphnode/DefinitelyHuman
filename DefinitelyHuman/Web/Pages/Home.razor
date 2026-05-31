@@ -1,101 +1,186 @@
 @page "/"
 @rendermode InteractiveServer
+
+@using System.Globalization
+@using DefinitelyHuman.Agent
 @using DefinitelyHuman.Data
 @using DefinitelyHuman.Irc
 @using Microsoft.EntityFrameworkCore
+@using LinkPreviewService = DefinitelyHuman.Utilities.LinkPreviewService
+
 @inject IrcBot Bot
+@inject AgentLog AgentLog
+@inject LinkPreviewService Previews
 @inject IJSRuntime JS
+
 @implements IDisposable
 
 <div class="page-header">
-    <h2>Chat Logs</h2>
+    <h2>Timeline</h2>
 </div>
 
 <div class="page-body" @ref="_logContainer">
-    @if (_messages == null)
+    @if (!_hasRows)
     {
-        <div class="loading">Loading...</div>
-    }
-    else if (_messages.Count == 0)
-    {
-        <div class="empty-state">No messages yet.</div>
+        <div class="empty-state">No activity yet.</div>
     }
     else
     {
-        <table class="message-log">
-            <thead>
-                <tr>
-                    <th>Time</th>
-                    <th>Channel</th>
-                    <th>Nick</th>
-                    <th>Message</th>
-                </tr>
-            </thead>
-            <tbody>
-                @foreach (var msg in _messages)
+        <Virtualize @ref="_virtualize" ItemsProvider="ProvideRows" ItemSize="28">
+            <ItemContent>
+                @if (context.IsDaySeparator)
                 {
-                    <tr class="@RowClass(msg)">
-                        <td class="col-time">@msg.Timestamp.ToString("HH:mm:ss")</td>
-                        <td class="col-channel">@msg.Channel</td>
-                        <td class="col-nick">@msg.Nick</td>
-                        <td class="col-text">@RenderText(msg.Text)</td>
-                    </tr>
+                    <div class="tl-day-sep">
+                        <hr /><span>@FormatDate(context.Timestamp)</span><hr />
+                    </div>
                 }
-            </tbody>
-        </table>
+                else if (context.IsMessage)
+                {
+                    <div class="tl-row tl-msg @MsgRowClass(context)">
+                        <span class="tl-time">@context.Timestamp.ToLocalTime().ToString("HH:mm:ss")</span>
+                        <span class="tl-nick" style="color:@NickColor(context.Nick!, context.IsOwnMessage)">@context.Nick</span>
+                        <div class="tl-content">
+                            <span class="tl-text">@RenderText(context.Text!)</span>
+                            @foreach (var preview in GetPreviews(context.Text!))
+                            {
+                                <a class="tl-preview" href="@preview.Url" target="_blank" rel="noopener">
+                                    @if (preview.ImageUrl is not null)
+                                    {
+                                        <img class="tl-preview-img" src="@preview.ImageUrl" alt="" loading="lazy" />
+                                    }
+                                    <div class="tl-preview-body">
+                                        @if (preview.Title is not null)
+                                        {
+                                            <div class="tl-preview-title">@preview.Title</div>
+                                        }
+                                        @if (preview.Description is not null)
+                                        {
+                                            <div class="tl-preview-desc">@Truncate(preview.Description, 160)</div>
+                                        }
+                                        <div class="tl-preview-site">@Domain(preview.Url)</div>
+                                    </div>
+                                </a>
+                            }
+                        </div>
+                    </div>
+                }
+                else
+                {
+                    <div class="tl-row tl-evt @($"k-{context.Kind!.ToString()!.ToLowerInvariant()}")">
+                        <span class="tl-time">@context.Timestamp.ToLocalTime().ToString("HH:mm:ss")</span>
+                        <span class="tl-marker">~</span>
+                        @if (!string.IsNullOrEmpty(context.Detail))
+                        {
+                            <details class="tl-detail">
+                                <summary>@context.Summary</summary>
+                                <pre>@context.Detail</pre>
+                            </details>
+                        }
+                        else
+                        {
+                            <span class="tl-summary">@context.Summary</span>
+                        }
+                    </div>
+                }
+            </ItemContent>
+            <Placeholder>
+                <div class="tl-row tl-placeholder">…</div>
+            </Placeholder>
+        </Virtualize>
     }
 </div>
 
 @code {
-    private List<Message>? _messages;
+    private sealed record TimelineRow(
+        DateTime Timestamp,
+        bool IsMessage,
+        bool IsDaySeparator = false,
+        string? Nick = null,
+        string? Text = null,
+        bool IsOwnMessage = false,
+        AgentEventKind? Kind = null,
+        string? Summary = null,
+        string? Detail = null);
+
+    private bool _hasRows;
+    private Virtualize<TimelineRow>? _virtualize;
     private ElementReference _logContainer;
-    private bool _shouldScrollToBottom;
+    private bool _initialScrollDone;
 
     protected override async Task OnInitializedAsync()
     {
-        await LoadMessages();
+        _hasRows = await HasRows();
+        Bot.MessageLogged += OnMessageLogged;
+        AgentLog.Updated += OnAgentUpdated;
+        Previews.PreviewReady += OnPreviewReady;
     }
-
+    
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
-        {
-            Bot.MessageLogged += OnMessageLogged;
-            // Start at the newest messages.
             await ScrollToBottomSafe();
-        }
-        else if (_shouldScrollToBottom)
-        {
-            _shouldScrollToBottom = false;
-            await ScrollToBottomSafe();
-        }
+    }
+    
+    
+    private Task OnMessageLogged() { OnChanged(); return Task.CompletedTask; }
+    private void OnAgentUpdated() => OnChanged();
+
+    private void OnPreviewReady() => _ = InvokeAsync(async () =>
+    {
+        if (_virtualize is not null)
+            await _virtualize.RefreshDataAsync();
+        StateHasChanged();
+    });
+    
+    private void OnChanged() => _ = InvokeAsync(async () =>
+    {
+        _hasRows = await HasRows();
+        if (_virtualize is not null)
+            await _virtualize.RefreshDataAsync();
+        StateHasChanged();
+    });
+    
+    private static async ValueTask<bool> HasRows()
+    {
+        await using var db = new ChattingContext();
+        return await db.Messages.CountAsync() != 0;
     }
 
-    private async Task OnMessageLogged()
+    private async ValueTask<ItemsProviderResult<TimelineRow>> ProvideRows(ItemsProviderRequest request)
     {
-        await InvokeAsync(async () =>
-        {
-            // Only stick to the bottom if the user is already there.
-            _shouldScrollToBottom = await IsAtBottomSafe();
-            await LoadMessages();
-            StateHasChanged();
-        });
-    }
+        //Logger.LogDebug("Providing timeline rows from index {StartIndex} with count {Count}", request.StartIndex, request.Count);
+        
+        await using var db = new ChattingContext();
+        
+        int totalItemCount = await db.Messages.CountAsync() + await db.AgentEvents.CountAsync();
 
-    // JS interop is best-effort: the circuit may be disconnected or unavailable
-    // when a message arrives, which must never crash the bot.
-    private async Task<bool> IsAtBottomSafe()
-    {
-        try
+        
+        var messages = db.Messages.Select(m => new { m.Timestamp, IsMessage = true, Nick = (string?)m.Nick, Text = (string?)m.Text, m.IsOwnMessage, Kind = (string?)null, Summary = (string?)null, Detail = (string?)null });
+        var events = db.AgentEvents.Select(e => new { e.Timestamp, IsMessage = false, Nick = (string?)null, Text = (string?)null, IsOwnMessage = false, Kind = (string?)e.Kind.ToString(), Summary = (string?)e.Summary, e.Detail });
+
+        var rows = await messages.Concat(events)
+            .OrderBy(r => r.Timestamp)
+            .Skip(request.StartIndex)
+            .Take(request.Count)
+            .Select(r => new TimelineRow(r.Timestamp, r.IsMessage, false, r.Nick, r.Text, r.IsOwnMessage, r.Kind != null ? Enum.Parse<AgentEventKind>(r.Kind) : AgentEventKind.Unknown, r.Summary, r.Detail))
+            .ToListAsync();
+        
+        if (rows.Count == 0)
+            return new ItemsProviderResult<TimelineRow>(new List<TimelineRow>(), totalItemCount);
+        
+        rows = InsertDaySeparators(rows);
+        
+        if (!_initialScrollDone)
         {
-            // Short timeout so a disconnected circuit fails fast instead of waiting
-            // out the 60s default JSInteropDefaultCallTimeout.
-            return await JS.InvokeAsync<bool>("chatScroll.isAtBottom", TimeSpan.FromSeconds(2), _logContainer);
+            _initialScrollDone = true;
+            _ = InvokeAsync(async () =>
+            {
+                await Task.Yield(); // let the render complete
+                await ScrollToBottomSafe();
+            });
         }
-        catch
-        {
-            return false;
-        }
+        
+        return new ItemsProviderResult<TimelineRow>(rows, totalItemCount);
     }
 
     private async Task ScrollToBottomSafe()
@@ -106,48 +191,139 @@
         }
         catch
         {
-            // Circuit not ready/disconnected — ignore.
+            // ignored
         }
     }
-
-    private async Task LoadMessages()
+    
+    private static List<TimelineRow> InsertDaySeparators(IEnumerable<TimelineRow> sorted)
     {
-        await using var db = new ChattingContext();
-        _messages = await db.Messages
-            .OrderBy(m => m.Timestamp)
-            .Take(200)
-            .ToListAsync();
+        var result = new List<TimelineRow>();
+        DateOnly? lastDate = null;
+
+        foreach (var row in sorted)
+        {
+            var localDate = DateOnly.FromDateTime(row.Timestamp.ToLocalTime());
+            if (lastDate is null || localDate != lastDate)
+            {
+                var sepTime = lastDate is null
+                    ? row.Timestamp
+                    : localDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Local).ToUniversalTime();
+                result.Add(new TimelineRow(sepTime, false, IsDaySeparator: true));
+                lastDate = localDate;
+            }
+            result.Add(row);
+        }
+
+        return result;
     }
 
-    // Row styling: the bot's own lines stay blue; an incoming line that names the bot gets the
-    // "mention" highlight, mirroring how an IRC client highlights your own nick.
-    private string RowClass(Message msg)
+    private static string FormatDate(DateTime utcTimestamp) =>
+        utcTimestamp.ToLocalTime().ToString("dddd, d MMMM yyyy", CultureInfo.InvariantCulture);
+
+    // --- Nick colors (deterministic hue from nick hash, à la Halloy) ---
+
+    // FNV-1a 32-bit: deterministic across processes (unlike string.GetHashCode in .NET).
+    // ReSharper disable once InconsistentNaming
+    private static uint Fnv1a(string s)
     {
-        if (msg.IsOwnMessage) return "own-message";
-        return MentionsBot(msg.Text) ? "mention" : "";
+        uint hash = 2166136261;
+        foreach (char c in s)
+        {
+            hash ^= c;
+            hash *= 16777619;
+        }
+        return hash;
+    }
+
+    // Deterministic hue per nick, fixed saturation + lightness tuned for the dark theme.
+    // The bot's own messages keep the accent blue.
+    private static string NickColor(string nick, bool isOwn)
+    {
+        if (isOwn) return "var(--own-msg)";
+        int hue = (int)(Fnv1a(nick) % 360);
+        return $"hsl({hue}, 70%, 68%)";
+    }
+
+    // --- Message rendering (linkify URLs + nick highlight) ---
+
+    private string MsgRowClass(TimelineRow row)
+    {
+        if (row.IsOwnMessage) return "own-message";
+        return MentionsBot(row.Text!) ? "mention" : "";
     }
 
     private bool MentionsBot(string text) =>
         !string.IsNullOrEmpty(Bot.Nick) && text.Contains(Bot.Nick, StringComparison.OrdinalIgnoreCase);
 
-    // Renders message text with any occurrence of the bot's nick wrapped in a highlight span.
-    // The text is HTML-encoded first, so this is safe to emit as markup.
+    /// <summary>
+    /// Renders message text with clickable URLs and highlighted bot-nick mentions.
+    /// Process order: split by URLs → encode text segments → wrap URLs as &lt;a&gt; → nick highlight.
+    /// </summary>
     private MarkupString RenderText(string text)
     {
-        var encoded = System.Net.WebUtility.HtmlEncode(text);
-        if (string.IsNullOrEmpty(Bot.Nick))
-            return (MarkupString)encoded;
+        var sb = new System.Text.StringBuilder();
+        int lastIdx = 0;
 
-        var pattern = System.Text.RegularExpressions.Regex.Escape(System.Net.WebUtility.HtmlEncode(Bot.Nick));
-        var highlighted = System.Text.RegularExpressions.Regex.Replace(
-            encoded, pattern,
-            m => $"<span class=\"hl-nick\">{m.Value}</span>",
-            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-        return (MarkupString)highlighted;
+        foreach (System.Text.RegularExpressions.Match m in LinkPreviewService.ExtractUrls(text))
+        {
+            var url = LinkPreviewService.CleanUrl(m.Value);
+            if (url.Length == 0) continue;
+
+            // Text before this URL
+            sb.Append(System.Net.WebUtility.HtmlEncode(text[lastIdx..m.Index]));
+
+            // The URL as a clickable link
+            var hrefEncoded = System.Net.WebUtility.HtmlEncode(url);
+            sb.Append($"<a href=\"{hrefEncoded}\" class=\"tl-link\" target=\"_blank\" rel=\"noopener\">{hrefEncoded}</a>");
+
+            // Advance past the cleaned URL length (not the raw match, in case we trimmed punctuation)
+            lastIdx = m.Index + url.Length;
+        }
+
+        // Remaining text after the last URL
+        sb.Append(System.Net.WebUtility.HtmlEncode(text[lastIdx..]));
+
+        var result = sb.ToString();
+
+        // Apply nick highlighting on top of the linkified text
+        if (!string.IsNullOrEmpty(Bot.Nick))
+        {
+            var pattern = System.Text.RegularExpressions.Regex.Escape(System.Net.WebUtility.HtmlEncode(Bot.Nick));
+            result = System.Text.RegularExpressions.Regex.Replace(
+                result, pattern,
+                match => $"<span class=\"hl-nick\">{match.Value}</span>",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        }
+
+        return (MarkupString)result;
     }
 
+    // --- Link previews ---
+
+    private IEnumerable<LinkPreviewService.LinkPreview> GetPreviews(string text)
+    {
+        foreach (System.Text.RegularExpressions.Match m in LinkPreviewService.ExtractUrls(text))
+        {
+            var url = LinkPreviewService.CleanUrl(m.Value);
+            if (url.Length == 0) continue;
+            var preview = Previews.GetPreview(url);
+            if (preview is not null)
+                yield return preview;
+        }
+    }
+
+    private static string Domain(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host : url;
+
+    private static string Truncate(string s, int max) =>
+        s.Length <= max ? s : s[..(max - 1)] + "…";
+
+    // --- Scroll helpers ---
+    
     public void Dispose()
     {
         Bot.MessageLogged -= OnMessageLogged;
+        AgentLog.Updated -= OnAgentUpdated;
+        Previews.PreviewReady -= OnPreviewReady;
     }
 }

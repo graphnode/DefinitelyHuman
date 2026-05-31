@@ -1,5 +1,6 @@
 using Anthropic;
 using Anthropic.Models.Messages;
+using DefinitelyHuman.Data;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 
@@ -29,8 +30,9 @@ public class ChatAgent
     private readonly SemaphoreSlim _modelLock = new(1, 1);
 
     // I/O bound at startup: read the recent log (given a "since" timestamp) and send a reply.
+    // _send returns the new message's id so a "replied" event can link to the line it produced.
     private Func<DateTime, Task<string>>? _readLog;
-    private Func<string, Task>? _send;
+    private Func<string, Task<int>>? _send;
 
     // Debounce: at most one glance is ever scheduled. New activity is absorbed by the
     // pending glance, so a burst of messages becomes a single read + reply.
@@ -105,8 +107,8 @@ public class ChatAgent
 
     /// <summary>Wires the channel I/O: how to read the recent log and how to send a reply.</summary>
     /// <param name="readLog">Returns the channel log since the given timestamp (already capped).</param>
-    /// <param name="send">Sends a reply to the channel.</param>
-    public void Bind(Func<DateTime, Task<string>> readLog, Func<string, Task> send)
+    /// <param name="send">Sends a reply to the channel and returns its new message id.</param>
+    public void Bind(Func<DateTime, Task<string>> readLog, Func<string, Task<int>> send)
     {
         _readLog = readLog;
         _send = send;
@@ -234,7 +236,8 @@ public class ChatAgent
             string? reply = await GenerateAsync(prompt);
             if (string.IsNullOrEmpty(reply) || reply.Contains("[SILENT]"))
             {
-                LogDecision($"glanced ({mode}, focus {focus:F2}) — decided to stay quiet");
+                _agentLog.Log(AgentEventKind.Decision, $"glanced ({mode}, focus {focus:F2}) — decided to stay quiet");
+                LogConsole($"glanced ({mode}, focus {focus:F2}) — decided to stay quiet");
                 return;
             }
 
@@ -242,14 +245,18 @@ public class ChatAgent
             // and refresh focus before sending.
             lock (_glanceLock) { _lastFocusedAt = DateTime.UtcNow; }
             _attention.Engaged();
-            LogDecision($"glanced ({mode}, focus {focus:F2}) — replied: \"{reply}\"");
 
-            if (_send is not null)
-                await _send(reply);
+            // Stamp the decision just before the reply lands, then link it to the message it
+            // produced so the timeline can attach the reasoning to the chat line.
+            var decidedAt = DateTime.UtcNow;
+            int messageId = _send is not null ? await _send(reply) : 0;
+            _agentLog.Log(AgentEventKind.Decision, $"replied ({mode}, focus {focus:F2})",
+                detail: reply, messageId: messageId > 0 ? messageId : null, at: decidedAt);
+            LogConsole($"glanced ({mode}, focus {focus:F2}) — replied: \"{reply}\"");
         }
         catch (Exception ex)
         {
-            _agentLog.Log(AgentLog.Kind.Error, ex.Message);
+            _agentLog.Log(AgentEventKind.Error, ex.Message, detail: ex.ToString());
             _logger.LogError(ex, "Agent error");
         }
     }
@@ -274,7 +281,8 @@ public class ChatAgent
             {
                 if (string.IsNullOrWhiteSpace(thought.Text))
                     continue;
-                _agentLog.Log(AgentLog.Kind.Thinking, thought.Text);
+                // Summary is a short preview; the full thought goes in Detail (expandable in the UI).
+                _agentLog.Log(AgentEventKind.Thinking, FirstLine(thought.Text), detail: thought.Text);
                 if (_options.LogReasoning)
                     _logger.LogInformation("[THINKING] {ThoughtText}", thought.Text);
             }
@@ -289,8 +297,20 @@ public class ChatAgent
 
     private void LogDecision(string message)
     {
-        _agentLog.Log(AgentLog.Kind.Decision, message);
+        _agentLog.Log(AgentEventKind.Decision, message);
+        LogConsole(message);
+    }
+
+    private void LogConsole(string message)
+    {
         if (_options.LogReasoning)
             _logger.LogInformation("[REASONING] {Message}", message);
+    }
+
+    private static string FirstLine(string text)
+    {
+        var nl = text.IndexOf('\n');
+        var line = (nl < 0 ? text : text[..nl]).Trim();
+        return line.Length <= 120 ? line : line[..119] + "…";
     }
 }

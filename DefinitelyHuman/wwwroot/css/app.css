@@ -172,80 +172,208 @@ body {
     padding: 0;
 }
 
-/* Message log */
-.message-log {
-    width: 100%;
-    border-collapse: collapse;
-}
-
-.message-log th {
-    position: sticky;
-    top: 0;
-    background: var(--bg-surface);
-    padding: 0.5rem 0.75rem;
-    text-align: left;
-    font-size: 0.7rem;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--text-muted);
-    border-bottom: 1px solid var(--border);
-    font-weight: 500;
-}
-
-.message-log td {
-    padding: 0.2rem 0.75rem;
-    vertical-align: top;
-    border-bottom: 1px solid rgba(42, 43, 61, 0.3);
-}
-
-.message-log tr:hover {
-    background: rgba(122, 162, 247, 0.03);
-}
-
-.message-log .col-time {
-    width: 70px;
-    color: var(--text-muted);
-    font-size: 0.8rem;
-    white-space: nowrap;
-}
-
-.message-log .col-channel {
-    width: 120px;
-    color: var(--cyan);
+/* Merged timeline (chat messages + agent events) */
+.tl-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    padding: 0.15rem 0.9rem;
     font-size: 0.85rem;
-}
-
-.message-log .col-nick {
-    width: 130px;
-    font-weight: 600;
-    font-size: 0.85rem;
-}
-
-.message-log .col-text {
-    font-size: 0.85rem;
+    border-bottom: 1px solid rgba(42, 43, 61, 0.25);
     word-break: break-word;
 }
 
-.message-log tr.own-message .col-nick,
-.message-log tr.own-message .col-text {
+.tl-row:hover {
+    background: rgba(122, 162, 247, 0.03);
+}
+
+.tl-time {
+    flex: 0 0 auto;
+    width: 64px;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    white-space: nowrap;
+}
+
+/* Chat message rows */
+.tl-msg .tl-nick {
+    flex: 0 0 auto;
+    min-width: 140px;
+    font-weight: 600;
+    /* color is set inline via hsl() from the nick hash */
+}
+
+.tl-msg .tl-content {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.tl-msg .tl-text {
+    display: inline;
+}
+
+.tl-msg.own-message .tl-nick,
+.tl-msg.own-message .tl-text {
     color: var(--own-msg);
 }
 
-/* Bot-nick highlight — mirrors an IRC client highlighting your own nick.
-   --own-msg is #7aa2f7 (122, 162, 247). */
-.message-log tr.mention {
+/* Bot-nick highlight — mirrors an IRC client highlighting your own nick. */
+.tl-msg.mention {
     background: rgba(122, 162, 247, 0.07);
 }
 
-.message-log tr.mention:hover {
+.tl-msg.mention:hover {
     background: rgba(122, 162, 247, 0.1);
 }
 
-.message-log .hl-nick {
+/* Inline links */
+.tl-link {
+    color: var(--accent);
+    text-decoration: none;
+}
+
+.tl-link:hover {
+    text-decoration: underline;
+    color: var(--accent-hover);
+}
+
+/* Link preview cards */
+.tl-preview {
+    display: flex;
+    gap: 0.75rem;
+    margin-top: 0.4rem;
+    padding: 0.5rem 0.65rem;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    text-decoration: none;
+    color: inherit;
+    max-width: 480px;
+    overflow: hidden;
+    transition: border-color 0.15s;
+}
+
+.tl-preview:hover {
+    border-left-color: var(--accent-hover);
+}
+
+.tl-preview-img {
+    flex: 0 0 auto;
+    width: 72px;
+    height: 72px;
+    object-fit: cover;
+    border-radius: 4px;
+    background: var(--border);
+}
+
+.tl-preview-body {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+}
+
+.tl-preview-title {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.tl-preview-desc {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.tl-preview-site {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    opacity: 0.7;
+}
+
+.hl-nick {
     background: rgba(122, 162, 247, 0.22);
     color: var(--accent-hover);
     border-radius: 3px;
     padding: 0 3px;
+}
+
+/* Agent event rows — indented and muted so chat stays readable */
+.tl-evt {
+    padding-left: 2rem;
+    color: var(--text-muted);
+    font-size: 0.82rem;
+}
+
+.tl-evt .tl-marker {
+    flex: 0 0 auto;
+    color: var(--text-muted);
+    opacity: 0.6;
+}
+
+.tl-evt .tl-summary,
+.tl-evt .tl-detail {
+    flex: 1 1 auto;
+}
+
+.tl-evt .tl-detail summary {
+    cursor: pointer;
+    list-style: revert;
+}
+
+.tl-evt .tl-detail pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0.25rem 0 0.1rem;
+    padding: 0.4rem 0.6rem;
+    background: var(--bg-surface);
+    border-left: 2px solid var(--border);
+    border-radius: 3px;
+    font-size: 0.8rem;
+    color: var(--text);
+}
+
+/* Event kind accents */
+.tl-evt.k-decision .tl-marker { color: var(--accent); }
+.tl-evt.k-thinking { font-style: italic; }
+.tl-evt.k-thinking .tl-marker { color: var(--cyan); }
+.tl-evt.k-toolcall .tl-marker { color: var(--green); }
+.tl-evt.k-error,
+.tl-evt.k-error .tl-marker { color: var(--red); }
+
+/* Day separator — horizontal rule splitting days at midnight */
+.tl-day-sep {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0.9rem;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.tl-day-sep hr {
+    flex: 1;
+    border: none;
+    border-top: 1px solid var(--border);
+}
+
+.tl-day-sep span {
+    white-space: nowrap;
+}
+
+.tl-placeholder {
+    color: var(--text-muted);
+    justify-content: center;
 }
 
 /* Decision log */

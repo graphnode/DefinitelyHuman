@@ -108,28 +108,30 @@ public class IrcBot : IDisposable
         }
     }
 
-    public Task SendMessageAsync(string text) => SendMessageAsync(_options.Channel, text);
+    /// <summary>Sends a reply to the channel; returns the logged message's id, or 0 if discarded.</summary>
+    public Task<int> SendMessageAsync(string text) => SendMessageAsync(_options.Channel, text);
 
-    private async Task SendMessageAsync(string channel, string text)
+    private async Task<int> SendMessageAsync(string channel, string text)
     {
         if (string.IsNullOrEmpty(text))
-            return;
+            return 0;
 
         if (text.Length > MaxReplyLength)
         {
             _logger.LogWarning("Agent error: Reply too long ({TextLength} chars), discarding.", text.Length);
-            return;
+            return 0;
         }
 
         int charsPerSecond = _rng.Next(4, 8);
         int typingDelay = (text.Length / charsPerSecond) * 1000 + _rng.Next(500, 1500);
         await Task.Delay(typingDelay);
-        
+
         _logger.LogInformation("[{Channel}] <{Nick}> {Text}", channel, _options.Nick, text);
         await _client.SendAsync(new PrivMsgMessage(channel, text));
 
-        await LogMessageAsync(channel, _options.Nick, text, isOwn: true);
+        int messageId = await LogMessageAsync(channel, _options.Nick, text, isOwn: true);
         _ = NotifyMessageLogged();   // fire-and-forget: a slow UI subscriber must not stall the code path
+        return messageId;
     }
 
     private async Task NotifyMessageLogged()
@@ -150,17 +152,21 @@ public class IrcBot : IDisposable
 
     public Task ConnectAsync() => _client.ConnectAsync();
 
-    private async Task LogMessageAsync(string channel, string nick, string text, bool isOwn)
+    /// <summary>Persists a message and returns its new id (0 on failure).</summary>
+    private async Task<int> LogMessageAsync(string channel, string nick, string text, bool isOwn)
     {
         try
         {
             await using var db = new ChattingContext();
-            db.Messages.Add(new Message { Channel = channel, Nick = nick, Text = text, IsOwnMessage = isOwn });
+            var message = new Message { Channel = channel, Nick = nick, Text = text, IsOwnMessage = isOwn };
+            db.Messages.Add(message);
             await db.SaveChangesAsync();
+            return message.MessageId; // EF populates the PK after SaveChanges
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "DB error while logging message");
+            return 0;
         }
     }
 

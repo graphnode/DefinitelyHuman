@@ -5,6 +5,7 @@ namespace DefinitelyHuman.Data;
 public class ChattingContext : DbContext
 {
     public DbSet<Message> Messages { get; set; }
+    public DbSet<AgentEvent> AgentEvents { get; set; }
 
     private readonly string _dbPath;
 
@@ -24,5 +25,17 @@ public class ChattingContext : DbContext
     {
         modelBuilder.Entity<Message>()
             .HasIndex(m => new { m.Channel, m.Timestamp });
+
+        modelBuilder.Entity<AgentEvent>(e =>
+        {
+            e.HasIndex(a => new { a.Channel, a.Timestamp });
+            // Store the enum as text for a legible DB.
+            e.Property(a => a.Kind).HasConversion<string>();
+            // Optional link to the message the event produced; messages are never deleted.
+            e.HasOne<Message>()
+                .WithMany()
+                .HasForeignKey(a => a.MessageId)
+                .OnDelete(DeleteBehavior.NoAction);
+        });
     }
 }

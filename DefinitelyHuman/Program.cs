@@ -3,6 +3,7 @@ using DefinitelyHuman.Data;
 using DefinitelyHuman.Irc;
 using DefinitelyHuman.Web;
 using dotenv.net;
+using LinkPreviewService = DefinitelyHuman.Utilities.LinkPreviewService;
 
 DotEnv.Load();
 
@@ -27,10 +28,12 @@ var chatAgentOptions = new ChatAgentOptions
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddLogging(b =>
+builder.Services.AddLogging(loggingBuilder =>
 {
-    b.ClearProviders();
-    b.AddSimpleConsole(options =>
+    loggingBuilder.ClearProviders();
+    loggingBuilder.SetMinimumLevel(LogLevel.Debug);
+    loggingBuilder.AddFilter("Microsoft", LogLevel.Warning);
+    loggingBuilder.AddSimpleConsole(options =>
     {
         options.SingleLine = true;
         options.TimestampFormat = "[HH:mm:ss] ";
@@ -40,9 +43,9 @@ builder.Services.AddLogging(b =>
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
-// Decision log: always captured in memory and shown on the dashboard's Reasoning page.
-var agentLog = new AgentLog();
-builder.Services.AddSingleton(agentLog);
+// Agent event log: persists glance decisions, thinking, and (later) tool calls to the DB,
+// where they're merged with the chat log into the dashboard timeline.
+builder.Services.AddSingleton(sp => new AgentLog(ircBotOptions.Channel, sp.GetRequiredService<ILogger<AgentLog>>()));
 
 // enableThinking costs extra (output) tokens on every glance — flip on for better answers,
 // off to save tokens. logReasoning only echoes the decision log + thinking to the console;
@@ -50,6 +53,7 @@ builder.Services.AddSingleton(agentLog);
 builder.Services.AddSingleton<ChatAgent>(sp => new ChatAgent(chatAgentOptions, sp.GetRequiredService<AgentLog>(), sp.GetRequiredService<ILogger<ChatAgent>>()));
 builder.Services.AddSingleton<IrcBot>(sp => new IrcBot(ircBotOptions, sp.GetRequiredService<ILogger<IrcBot>>()));
 
+builder.Services.AddSingleton<LinkPreviewService>();
 builder.Services.AddHostedService<IrcBotService>();
 
 var app = builder.Build();
