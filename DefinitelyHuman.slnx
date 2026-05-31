@@ -3,4 +3,5 @@
     <File Path="Scripts/ImportHalloyLog.cs" />
   </Folder>
   <Project Path="DefinitelyHuman/DefinitelyHuman.csproj" />
+  <Project Path="IrcBouncer/IrcBouncer.csproj" />
 </Solution>
