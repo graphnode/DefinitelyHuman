@@ -6,6 +6,7 @@ public class ChattingContext : DbContext
 {
     public DbSet<Message> Messages { get; set; }
     public DbSet<AgentEvent> AgentEvents { get; set; }
+    public DbSet<CachedLinkPreview> CachedLinkPreviews { get; set; }
 
     private readonly string _dbPath;
 

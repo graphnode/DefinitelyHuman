@@ -1,0 +1,26 @@
+@typeparam TItem
+@using Microsoft.AspNetCore.Components.Web.Virtualization
+
+@{
+    int total = TotalItemCount;
+    int start = Math.Clamp(_itemsBefore, 0, total);
+    int end = Math.Min(start + _visibleItemCapacity, total);
+    int after = total - end;
+    var items = CurrentItems;
+    int offset = CurrentOffset;
+}
+
+<div style="@SpacerStyle(0, start)" data-items-before="@start" @ref="_spacerBefore"></div>
+
+@for (int i = start; i < end; i++)
+{
+    int bufIdx = i - offset;
+    if (bufIdx >= 0 && bufIdx < items.Count)
+    {
+        <div @key="i" data-cv-idx="@i">
+            @ItemContent(items[bufIdx])
+        </div>
+    }
+}
+
+<div style="@SpacerStyle(end, after)" @ref="_spacerAfter"></div>

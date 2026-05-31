@@ -237,6 +237,22 @@ body {
     color: var(--accent-hover);
 }
 
+/* Image-only thumbnail (Halloy-style, 400x200 max keeping ratio) */
+.tl-thumb {
+    display: block;
+    margin-top: 0.4rem;
+    max-width: 400px;
+    text-decoration: none;
+    overflow-anchor: none;
+}
+
+.tl-thumb img {
+    display: block;
+    max-width: 400px;
+    max-height: 200px;
+    border-radius: 4px;
+}
+
 /* Link preview cards */
 .tl-preview {
     display: flex;
@@ -251,6 +267,7 @@ body {
     color: inherit;
     max-width: 480px;
     overflow: hidden;
+    overflow-anchor: none;
     transition: border-color 0.15s;
 }
 
@@ -308,7 +325,6 @@ body {
 
 /* Agent event rows — indented and muted so chat stays readable */
 .tl-evt {
-    padding-left: 2rem;
     color: var(--text-muted);
     font-size: 0.82rem;
 }
@@ -322,6 +338,7 @@ body {
 .tl-evt .tl-summary,
 .tl-evt .tl-detail {
     flex: 1 1 auto;
+    overflow-anchor: none;
 }
 
 .tl-evt .tl-detail summary {
@@ -376,24 +393,6 @@ body {
     justify-content: center;
 }
 
-/* Decision log */
-.message-log .col-kind {
-    width: 90px;
-    font-size: 0.7rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--text-muted);
-}
-
-.message-log tr.k-thinking .col-text {
-    color: var(--text-muted);
-    font-style: italic;
-}
-
-.message-log tr.k-error .col-kind,
-.message-log tr.k-error .col-text {
-    color: var(--red);
-}
 
 .empty-state {
     display: flex;

@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using System.Net.Http.Headers;
 using System.Text.RegularExpressions;
+using DefinitelyHuman.Data;
+using Microsoft.EntityFrameworkCore;
 
 namespace DefinitelyHuman.Utilities;
 
@@ -8,11 +10,14 @@ namespace DefinitelyHuman.Utilities;
 /// Fetches and caches OpenGraph link previews for URLs that appear in chat messages.
 /// Fetch is fire-and-forget: <see cref="GetPreview"/> returns immediately (null if not yet
 /// loaded) and <see cref="PreviewReady"/> fires when the data arrives so the UI can refresh.
-/// Ported from Halloy's preview.rs (OG meta-tag parsing).
+/// Previews are persisted to SQLite so they survive restarts.
 /// </summary>
 public sealed partial class LinkPreviewService : IDisposable
 {
-    public record LinkPreview(string Url, string? Title, string? Description, string? ImageUrl);
+    public record LinkPreview(string Url, string? Title, string? Description, string? ImageUrl)
+    {
+        public bool IsImageOnly => ImageUrl is not null && Title is null && Description is null;
+    }
 
     [GeneratedRegex(@"https?://[^\s<>""]+", RegexOptions.Compiled)]
     private static partial Regex UrlPattern();
@@ -42,6 +47,54 @@ public sealed partial class LinkPreviewService : IDisposable
         });
         _http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("WhatsApp", "2"));
         _http.Timeout = TimeSpan.FromSeconds(10);
+
+        LoadCache();
+    }
+
+    private void LoadCache()
+    {
+        try
+        {
+            using var db = new ChattingContext();
+            db.Database.ExecuteSqlRaw("""
+                CREATE TABLE IF NOT EXISTS CachedLinkPreviews (
+                    Url TEXT NOT NULL PRIMARY KEY,
+                    Title TEXT,
+                    Description TEXT,
+                    ImageUrl TEXT,
+                    FetchedAt TEXT NOT NULL
+                )
+                """);
+
+            foreach (var c in db.CachedLinkPreviews.AsNoTracking())
+                _cache[c.Url] = new LinkPreview(c.Url, c.Title, c.Description, c.ImageUrl);
+
+            _logger.LogInformation("Loaded {Count} cached link previews", _cache.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to load link preview cache");
+        }
+    }
+
+    private async Task PersistAsync(LinkPreview preview)
+    {
+        try
+        {
+            await using var db = new ChattingContext();
+            db.CachedLinkPreviews.Add(new CachedLinkPreview
+            {
+                Url = preview.Url,
+                Title = preview.Title,
+                Description = preview.Description,
+                ImageUrl = preview.ImageUrl,
+            });
+            await db.SaveChangesAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to persist link preview for {Url}", preview.Url);
+        }
     }
 
     /// <summary>Finds all URLs in a text string.</summary>
@@ -65,8 +118,13 @@ public sealed partial class LinkPreviewService : IDisposable
     public LinkPreview? GetPreview(string url)
     {
         if (_cache.TryGetValue(url, out var preview))
+        {
+            if (preview is not null)
+                _logger.LogDebug("Cache hit for {Url}", url);
             return preview;
+        }
 
+        _logger.LogDebug("Cache miss for {Url}, scheduling fetch", url);
         _cache.TryAdd(url, null);
         _ = FetchAsync(url);
         return null;
@@ -75,7 +133,7 @@ public sealed partial class LinkPreviewService : IDisposable
     private async Task FetchAsync(string url)
     {
         _logger.LogDebug("Fetching link preview for {Url}", url);
-        
+
         await _concurrency.WaitAsync();
         try
         {
@@ -94,9 +152,9 @@ public sealed partial class LinkPreviewService : IDisposable
             // If the URL points directly to an image, store a minimal preview.
             if (contentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
             {
-                var imagePreview = new LinkPreview(url, null, null, url);
-                _cache[url] = imagePreview;
-                _logger.LogDebug("Preview loaded for {Url}: image", url);
+                var p = new LinkPreview(url, null, null, url);
+                _cache[url] = p;
+                await PersistAsync(p);
                 PreviewReady?.Invoke();
                 return;
             }
@@ -124,7 +182,7 @@ public sealed partial class LinkPreviewService : IDisposable
             if (og.Title is null && og.ImageUrl is null)
             {
                 _logger.LogWarning("Preview skipped for {Url}: no OG data", url);
-                return; // no useful OG data
+                return;
             }
 
             // Resolve relative og:image URLs against the page's base URL.
@@ -135,10 +193,9 @@ public sealed partial class LinkPreviewService : IDisposable
                     resolvedImage = absolute.AbsoluteUri;
             }
 
-            var p = new LinkPreview(url, og.Title, og.Description, resolvedImage);
-            _cache[url] = p;
-            
-            _logger.LogDebug("Preview loaded for {Url}: title={Title}, image={HasImage}", url, p.Title, p.ImageUrl is not null);
+            var preview = new LinkPreview(url, og.Title, og.Description, resolvedImage);
+            _cache[url] = preview;
+            await PersistAsync(preview);
             PreviewReady?.Invoke();
         }
         catch (Exception ex)
@@ -153,9 +210,6 @@ public sealed partial class LinkPreviewService : IDisposable
 
     private record OgData(string? Title, string? Description, string? ImageUrl, string? SiteName);
 
-    /// <summary>
-    /// Parses OpenGraph meta tags from raw HTML, the same approach as Halloy's parse_meta_tag_properties.
-    /// </summary>
     private static OgData ParseOpenGraph(string html)
     {
         string? title = null, description = null, imageUrl = null, siteName = null;

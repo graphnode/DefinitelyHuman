@@ -12,16 +12,5 @@
 <body>
     <Routes/>
     <script src="_framework/blazor.web.js"></script>
-    <script>
-        window.chatScroll = {
-            isAtBottom: function (el, threshold) {
-                if (!el) return true;
-                return el.scrollHeight - el.scrollTop - el.clientHeight <= (threshold ?? 50);
-            },
-            scrollToBottom: function (el) {
-                if (el) el.scrollTop = el.scrollHeight;
-            }
-        };
-    </script>
 </body>
 </html>

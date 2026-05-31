@@ -5,13 +5,14 @@
 @using DefinitelyHuman.Agent
 @using DefinitelyHuman.Data
 @using DefinitelyHuman.Irc
-@using Microsoft.EntityFrameworkCore
+@using DefinitelyHuman.Web.Components.Chat
+@using Microsoft.AspNetCore.Components.Web.Virtualization
+@using Microsoft.Data.Sqlite
 @using LinkPreviewService = DefinitelyHuman.Utilities.LinkPreviewService
 
 @inject IrcBot Bot
 @inject AgentLog AgentLog
 @inject LinkPreviewService Previews
-@inject IJSRuntime JS
 
 @implements IDisposable
 
@@ -19,34 +20,38 @@
     <h2>Timeline</h2>
 </div>
 
-<div class="page-body" @ref="_logContainer">
-    @if (!_hasRows)
-    {
-        <div class="empty-state">No activity yet.</div>
-    }
-    else
-    {
-        <Virtualize @ref="_virtualize" ItemsProvider="ProvideRows" ItemSize="28">
-            <ItemContent>
-                @if (context.IsDaySeparator)
-                {
-                    <div class="tl-day-sep">
-                        <hr /><span>@FormatDate(context.Timestamp)</span><hr />
-                    </div>
-                }
-                else if (context.IsMessage)
-                {
-                    <div class="tl-row tl-msg @MsgRowClass(context)">
-                        <span class="tl-time">@context.Timestamp.ToLocalTime().ToString("HH:mm:ss")</span>
-                        <span class="tl-nick" style="color:@NickColor(context.Nick!, context.IsOwnMessage)">@context.Nick</span>
-                        <div class="tl-content">
-                            <span class="tl-text">@RenderText(context.Text!)</span>
-                            @foreach (var preview in GetPreviews(context.Text!))
+<div class="page-body">
+    <ChatVirtualize @ref="_virtualizer" TItem="TimelineRow" ItemsProvider="ProvideRows" ItemSize="28">
+        <ItemContent>
+            @if (context.ShowDaySeparator)
+            {
+                <div class="tl-day-sep">
+                    <hr /><span>@FormatDate(context.Timestamp)</span><hr />
+                </div>
+            }
+            @if (context.IsMessage)
+            {
+                <div class="tl-row tl-msg @MsgRowClass(context)">
+                    <span class="tl-time">@context.Timestamp.ToLocalTime().ToString("HH:mm:ss")</span>
+                    <span class="tl-nick" style="color:@NickColor(context.Nick!, context.IsOwnMessage)">@context.Nick</span>
+                    <div class="tl-content">
+                        <span class="tl-text">@RenderText(context.Text!)</span>
+                        @foreach (var preview in GetPreviews(context.Text!))
+                        {
+                            @if (preview.IsImageOnly)
+                            {
+                                <a class="tl-thumb" href="@preview.Url" target="_blank" rel="noopener">
+                                    <img src="@preview.ImageUrl" alt="" loading="lazy"
+                                         onerror="this.parentElement.style.display='none'" />
+                                </a>
+                            }
+                            else
                             {
                                 <a class="tl-preview" href="@preview.Url" target="_blank" rel="noopener">
                                     @if (preview.ImageUrl is not null)
                                     {
-                                        <img class="tl-preview-img" src="@preview.ImageUrl" alt="" loading="lazy" />
+                                        <img class="tl-preview-img" src="@preview.ImageUrl" alt="" loading="lazy"
+                                             onerror="this.style.display='none'" />
                                     }
                                     <div class="tl-preview-body">
                                         @if (preview.Title is not null)
@@ -61,40 +66,37 @@
                                     </div>
                                 </a>
                             }
-                        </div>
-                    </div>
-                }
-                else
-                {
-                    <div class="tl-row tl-evt @($"k-{context.Kind!.ToString()!.ToLowerInvariant()}")">
-                        <span class="tl-time">@context.Timestamp.ToLocalTime().ToString("HH:mm:ss")</span>
-                        <span class="tl-marker">~</span>
-                        @if (!string.IsNullOrEmpty(context.Detail))
-                        {
-                            <details class="tl-detail">
-                                <summary>@context.Summary</summary>
-                                <pre>@context.Detail</pre>
-                            </details>
-                        }
-                        else
-                        {
-                            <span class="tl-summary">@context.Summary</span>
                         }
                     </div>
-                }
-            </ItemContent>
-            <Placeholder>
-                <div class="tl-row tl-placeholder">…</div>
-            </Placeholder>
-        </Virtualize>
-    }
+                </div>
+            }
+            else
+            {
+                <div class="tl-row tl-evt @($"k-{context.Kind!.ToString()!.ToLowerInvariant()}")">
+                    <span class="tl-time">@context.Timestamp.ToLocalTime().ToString("HH:mm:ss")</span>
+                    <span class="tl-marker">~</span>
+                    @if (!string.IsNullOrEmpty(context.Detail))
+                    {
+                        <details class="tl-detail">
+                            <summary>@context.Summary</summary>
+                            <pre>@context.Detail</pre>
+                        </details>
+                    }
+                    else
+                    {
+                        <span class="tl-summary">@context.Summary</span>
+                    }
+                </div>
+            }
+        </ItemContent>
+    </ChatVirtualize>
 </div>
 
 @code {
     private sealed record TimelineRow(
         DateTime Timestamp,
         bool IsMessage,
-        bool IsDaySeparator = false,
+        bool ShowDaySeparator = false,
         string? Nick = null,
         string? Text = null,
         bool IsOwnMessage = false,
@@ -102,128 +104,115 @@
         string? Summary = null,
         string? Detail = null);
 
-    private bool _hasRows;
-    private Virtualize<TimelineRow>? _virtualize;
-    private ElementReference _logContainer;
-    private bool _initialScrollDone;
+    private ChatVirtualize<TimelineRow>? _virtualizer;
 
-    protected override async Task OnInitializedAsync()
+    protected override void OnInitialized()
     {
-        _hasRows = await HasRows();
         Bot.MessageLogged += OnMessageLogged;
         AgentLog.Updated += OnAgentUpdated;
         Previews.PreviewReady += OnPreviewReady;
     }
-    
-    protected override async Task OnAfterRenderAsync(bool firstRender)
-    {
-        if (firstRender)
-            await ScrollToBottomSafe();
-    }
-    
-    
+
     private Task OnMessageLogged() { OnChanged(); return Task.CompletedTask; }
     private void OnAgentUpdated() => OnChanged();
+    private void OnPreviewReady() => _ = InvokeAsync(StateHasChanged);
 
-    private void OnPreviewReady() => _ = InvokeAsync(async () =>
-    {
-        if (_virtualize is not null)
-            await _virtualize.RefreshDataAsync();
-        StateHasChanged();
-    });
-    
     private void OnChanged() => _ = InvokeAsync(async () =>
     {
-        _hasRows = await HasRows();
-        if (_virtualize is not null)
-            await _virtualize.RefreshDataAsync();
-        StateHasChanged();
+        if (_virtualizer is not null)
+            await _virtualizer.RefreshDataAsync();
     });
-    
-    private static async ValueTask<bool> HasRows()
-    {
-        await using var db = new ChattingContext();
-        return await db.Messages.CountAsync() != 0;
-    }
+
+    // ------------------------------------------------------------------ ItemsProvider
+
+    private static string DbPath => Path.Join(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "chatting.db");
 
     private async ValueTask<ItemsProviderResult<TimelineRow>> ProvideRows(ItemsProviderRequest request)
     {
-        //Logger.LogDebug("Providing timeline rows from index {StartIndex} with count {Count}", request.StartIndex, request.Count);
-        
-        await using var db = new ChattingContext();
-        
-        int totalItemCount = await db.Messages.CountAsync() + await db.AgentEvents.CountAsync();
+        await using var conn = new SqliteConnection($"Data Source={DbPath}");
+        await conn.OpenAsync(request.CancellationToken);
 
-        
-        var messages = db.Messages.Select(m => new { m.Timestamp, IsMessage = true, Nick = (string?)m.Nick, Text = (string?)m.Text, m.IsOwnMessage, Kind = (string?)null, Summary = (string?)null, Detail = (string?)null });
-        var events = db.AgentEvents.Select(e => new { e.Timestamp, IsMessage = false, Nick = (string?)null, Text = (string?)null, IsOwnMessage = false, Kind = (string?)e.Kind.ToString(), Summary = (string?)e.Summary, e.Detail });
+        int totalCount = Convert.ToInt32(
+            await Exec(conn, "SELECT (SELECT COUNT(*) FROM Messages) + (SELECT COUNT(*) FROM AgentEvents)"));
 
-        var rows = await messages.Concat(events)
-            .OrderBy(r => r.Timestamp)
-            .Skip(request.StartIndex)
-            .Take(request.Count)
-            .Select(r => new TimelineRow(r.Timestamp, r.IsMessage, false, r.Nick, r.Text, r.IsOwnMessage, r.Kind != null ? Enum.Parse<AgentEventKind>(r.Kind) : AgentEventKind.Unknown, r.Summary, r.Detail))
-            .ToListAsync();
-        
-        if (rows.Count == 0)
-            return new ItemsProviderResult<TimelineRow>(new List<TimelineRow>(), totalItemCount);
-        
-        rows = InsertDaySeparators(rows);
-        
-        if (!_initialScrollDone)
+        if (totalCount == 0 || request.Count == 0)
+            return new ItemsProviderResult<TimelineRow>([], totalCount);
+
+        // Previous item's timestamp for day-separator detection at page boundary.
+        DateTime? prevTimestamp = null;
+        if (request.StartIndex > 0)
         {
-            _initialScrollDone = true;
-            _ = InvokeAsync(async () =>
+            var ts = await Exec(conn, """
+                SELECT Timestamp FROM (
+                    SELECT Timestamp FROM Messages UNION ALL SELECT Timestamp FROM AgentEvents
+                ) ORDER BY Timestamp LIMIT 1 OFFSET @o
+                """, ("@o", request.StartIndex - 1));
+            if (ts is string s) prevTimestamp = DateTime.Parse(s, null, DateTimeStyles.RoundtripKind);
+        }
+
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT Timestamp, IsMessage, Nick, Text, IsOwnMessage, Kind, Summary, Detail FROM (
+                SELECT Timestamp, 1 AS IsMessage, Nick, Text, IsOwnMessage,
+                       NULL AS Kind, NULL AS Summary, NULL AS Detail FROM Messages
+                UNION ALL
+                SELECT Timestamp, 0, NULL, NULL, 0, Kind, Summary, Detail FROM AgentEvents
+            ) ORDER BY Timestamp LIMIT @n OFFSET @o
+            """;
+        cmd.Parameters.AddWithValue("@n", request.Count);
+        cmd.Parameters.AddWithValue("@o", request.StartIndex);
+
+        var rows = new List<TimelineRow>();
+        DateOnly? lastDate = prevTimestamp.HasValue
+            ? DateOnly.FromDateTime(prevTimestamp.Value.ToLocalTime())
+            : null;
+
+        await using var reader = await cmd.ExecuteReaderAsync(request.CancellationToken);
+        while (await reader.ReadAsync(request.CancellationToken))
+        {
+            var timestamp = DateTime.Parse(reader.GetString(0), null, DateTimeStyles.RoundtripKind);
+            bool isMessage = reader.GetInt32(1) == 1;
+
+            TimelineRow row;
+            if (isMessage)
             {
-                await Task.Yield(); // let the render complete
-                await ScrollToBottomSafe();
-            });
-        }
-        
-        return new ItemsProviderResult<TimelineRow>(rows, totalItemCount);
-    }
+                row = new TimelineRow(timestamp, true,
+                    Nick: reader.GetString(2),
+                    Text: reader.GetString(3),
+                    IsOwnMessage: reader.GetInt32(4) != 0);
+            }
+            else
+            {
+                row = new TimelineRow(timestamp, false,
+                    Kind: Enum.Parse<AgentEventKind>(reader.GetString(5)),
+                    Summary: reader.GetString(6),
+                    Detail: reader.IsDBNull(7) ? null : reader.GetString(7));
+            }
 
-    private async Task ScrollToBottomSafe()
-    {
-        try
-        {
-            await JS.InvokeVoidAsync("chatScroll.scrollToBottom", TimeSpan.FromSeconds(2), _logContainer);
-        }
-        catch
-        {
-            // ignored
-        }
-    }
-    
-    private static List<TimelineRow> InsertDaySeparators(IEnumerable<TimelineRow> sorted)
-    {
-        var result = new List<TimelineRow>();
-        DateOnly? lastDate = null;
-
-        foreach (var row in sorted)
-        {
             var localDate = DateOnly.FromDateTime(row.Timestamp.ToLocalTime());
             if (lastDate is null || localDate != lastDate)
             {
-                var sepTime = lastDate is null
-                    ? row.Timestamp
-                    : localDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Local).ToUniversalTime();
-                result.Add(new TimelineRow(sepTime, false, IsDaySeparator: true));
+                row = row with { ShowDaySeparator = true };
                 lastDate = localDate;
             }
-            result.Add(row);
+            rows.Add(row);
         }
 
-        return result;
+        return new ItemsProviderResult<TimelineRow>(rows, totalCount);
     }
 
-    private static string FormatDate(DateTime utcTimestamp) =>
-        utcTimestamp.ToLocalTime().ToString("dddd, d MMMM yyyy", CultureInfo.InvariantCulture);
+    private static async Task<object?> Exec(SqliteConnection conn, string sql, params (string name, object value)[] args)
+    {
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        foreach (var (name, value) in args)
+            cmd.Parameters.AddWithValue(name, value);
+        return await cmd.ExecuteScalarAsync();
+    }
 
-    // --- Nick colors (deterministic hue from nick hash, à la Halloy) ---
+    // --- Nick colors (deterministic hue from nick hash, a la Halloy) ---
 
-    // FNV-1a 32-bit: deterministic across processes (unlike string.GetHashCode in .NET).
-    // ReSharper disable once InconsistentNaming
     private static uint Fnv1a(string s)
     {
         uint hash = 2166136261;
@@ -235,8 +224,6 @@
         return hash;
     }
 
-    // Deterministic hue per nick, fixed saturation + lightness tuned for the dark theme.
-    // The bot's own messages keep the accent blue.
     private static string NickColor(string nick, bool isOwn)
     {
         if (isOwn) return "var(--own-msg)";
@@ -244,7 +231,7 @@
         return $"hsl({hue}, 70%, 68%)";
     }
 
-    // --- Message rendering (linkify URLs + nick highlight) ---
+    // --- Message rendering ---
 
     private string MsgRowClass(TimelineRow row)
     {
@@ -255,10 +242,6 @@
     private bool MentionsBot(string text) =>
         !string.IsNullOrEmpty(Bot.Nick) && text.Contains(Bot.Nick, StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>
-    /// Renders message text with clickable URLs and highlighted bot-nick mentions.
-    /// Process order: split by URLs → encode text segments → wrap URLs as &lt;a&gt; → nick highlight.
-    /// </summary>
     private MarkupString RenderText(string text)
     {
         var sb = new System.Text.StringBuilder();
@@ -269,23 +252,18 @@
             var url = LinkPreviewService.CleanUrl(m.Value);
             if (url.Length == 0) continue;
 
-            // Text before this URL
             sb.Append(System.Net.WebUtility.HtmlEncode(text[lastIdx..m.Index]));
 
-            // The URL as a clickable link
             var hrefEncoded = System.Net.WebUtility.HtmlEncode(url);
             sb.Append($"<a href=\"{hrefEncoded}\" class=\"tl-link\" target=\"_blank\" rel=\"noopener\">{hrefEncoded}</a>");
 
-            // Advance past the cleaned URL length (not the raw match, in case we trimmed punctuation)
             lastIdx = m.Index + url.Length;
         }
 
-        // Remaining text after the last URL
         sb.Append(System.Net.WebUtility.HtmlEncode(text[lastIdx..]));
 
         var result = sb.ToString();
 
-        // Apply nick highlighting on top of the linkified text
         if (!string.IsNullOrEmpty(Bot.Nick))
         {
             var pattern = System.Text.RegularExpressions.Regex.Escape(System.Net.WebUtility.HtmlEncode(Bot.Nick));
@@ -318,8 +296,9 @@
     private static string Truncate(string s, int max) =>
         s.Length <= max ? s : s[..(max - 1)] + "…";
 
-    // --- Scroll helpers ---
-    
+    private static string FormatDate(DateTime utcTimestamp) =>
+        utcTimestamp.ToLocalTime().ToString("dddd, d MMMM yyyy", CultureInfo.InvariantCulture);
+
     public void Dispose()
     {
         Bot.MessageLogged -= OnMessageLogged;
