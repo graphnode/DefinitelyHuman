@@ -63,10 +63,10 @@ public sealed class Attention
     public bool NoticesAmbient(double focus) => focus >= _glanceFloor && _rng.NextDouble() < focus;
 
     /// <summary>
-    /// Padding after a direct mention — the beep grabs you, but you still context-switch and
-    /// read before typing. Short, hard-capped at a minute.
+    /// Padding after a direct mention — you're already watching the channel, so it's just the
+    /// moment it takes to read the line before typing. 1–4 seconds.
     /// </summary>
-    public TimeSpan MentionNoticeDelay() => TimeSpan.FromSeconds(4 + _rng.NextDouble() * 36);
+    public TimeSpan MentionNoticeDelay() => TimeSpan.FromSeconds(1 + _rng.NextDouble() * 3);
 
     /// <summary>
     /// How long until you glance over at an ambient message: quick when focused, up to ~2

@@ -155,8 +155,10 @@ public class ChatAgent
             }
             else
             {
+                // Mid-conversation you read every line; only when attention has drifted is
+                // noticing left to chance.
                 double f0 = _attention.Current();
-                if (!mentionsMe && !_attention.NoticesAmbient(f0))
+                if (!mentionsMe && f0 < ActiveConversationFocus && !_attention.NoticesAmbient(f0))
                 {
                     LogDecision($"ignored \"{line}\" — didn't notice (focus {f0:F2})");
                     return;
@@ -164,11 +166,13 @@ public class ChatAgent
             }
 
             double focus = _attention.Current();
-            delay = _pendingHighlight ? _attention.MentionNoticeDelay() : _attention.AmbientNoticeDelay(focus);
+            // A follow-up: no ping, but you're still in the conversation, so you look right away.
+            bool followUp = !_pendingHighlight && focus >= ActiveConversationFocus;
+            delay = _pendingHighlight || followUp ? _attention.MentionNoticeDelay() : _attention.AmbientNoticeDelay(focus);
             cts = new CancellationTokenSource();
             _pendingGlance = cts;
             LogDecision($"noticed \"{line}\" — glancing in {delay.TotalSeconds:F0}s " +
-                        $"({(_pendingHighlight ? "mention" : "ambient")}, focus {focus:F2})");
+                        $"({(_pendingHighlight ? "mention" : followUp ? "follow-up" : "ambient")}, focus {focus:F2})");
         }
 
         _ = GlanceAsync(delay, cts);
@@ -221,7 +225,9 @@ public class ChatAgent
                 instruction = "You're in an active back-and-forth in this channel and just glanced back. "
                     + "If the latest messages are addressed to you, ask you something, react to you, or comment "
                     + "on you, answer like a normal person mid-conversation would — going quiet on someone who's "
-                    + "talking to you reads as rude or robotic. Reply with [SILENT] only if the recent messages "
+                    + "talking to you reads as rude or robotic. If you were the last one to speak and someone then "
+                    + "says something, they are talking to you, even if they don't use your nick — especially if "
+                    + "you just asked them a question. Reply with [SILENT] only if the recent messages "
                     + "are clearly between other people and don't involve you.";
             }
             else
@@ -236,7 +242,8 @@ public class ChatAgent
             string? reply = await GenerateAsync(prompt);
             if (string.IsNullOrEmpty(reply) || reply.Contains("[SILENT]"))
             {
-                _agentLog.Log(AgentEventKind.Decision, $"glanced ({mode}, focus {focus:F2}) — decided to stay quiet");
+                // Keep the raw output: a reply that merely contains [SILENT] is dropped too, and this shows it.
+                _agentLog.Log(AgentEventKind.Decision, $"glanced ({mode}, focus {focus:F2}) — decided to stay quiet", detail: reply);
                 LogConsole($"glanced ({mode}, focus {focus:F2}) — decided to stay quiet");
                 return;
             }

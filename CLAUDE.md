@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-DefinitelyHuman is an AI-powered IRC bot that behaves like a real person in chat. It connects to IRC, lurks in a channel, and responds based on a simulated human **attention model** rather than reacting to every message. It includes a Blazor Server web dashboard for viewing chat logs, the agent's decision log, and a live focus gauge.
+DefinitelyHuman is an AI-powered IRC bot that behaves like a real person in chat. It connects to IRC, lurks in a channel, and responds based on a simulated human **attention model** rather than reacting to every message. It includes a Blazor Server web dashboard: a single timeline merging the chat log with the agent's decisions, plus a live focus gauge.
 
 ## Build & Run
 
@@ -13,15 +13,21 @@ dotnet build DefinitelyHuman.slnx        # build the solution
 dotnet run --project DefinitelyHuman      # run bot + web dashboard
 ```
 
-The web dashboard runs on the default Kestrel ports (http://localhost:5000).
+Locally the dashboard runs on http://localhost:5265 (`Properties/launchSettings.json`).
 
 ### Configuration (`DefinitelyHuman/.env`)
 
-Settings are loaded from `DefinitelyHuman/.env` via `dotenv.net` (gitignored; see `.env.example` for a template). Note `dotenv.net` **overwrites** existing environment variables by default — so a value present in `.env` wins over a real env var of the same name.
+Settings are loaded from `.env` in the working directory via `dotenv.net` (gitignored; see `.env.example` for a template). Note `dotenv.net` **overwrites** existing environment variables by default — so a value present in `.env` wins over a real env var of the same name. With no `.env` present, real environment variables are used.
 
-- `ANTHROPIC_API_KEY` (required) — Claude API key. May come from `.env` or the real environment.
+- `ANTHROPIC_API_KEY` (required) — Claude API key.
+- `ANTHROPIC_MODEL` (default `claude-haiku-4-5-20251001`)
 - `IRC_HOST` (default `localhost`), `IRC_PORT` (default `6667`), `IRC_CHANNEL` (default `#clankersunite`), `IRC_NICK` (default `DefinitelyHuman`)
-- `IRC_PASSWORD` (optional) — SASL PLAIN password; blank/absent means no authentication.
+- `IRC_PASSWORD` (optional) — sent as the IRC server password (`PASS`); blank/absent means none. NetIRC has no SASL support.
+- `IRC_USERNAME` (optional) — IRC username sent at registration, when it must differ from the nick. soju needs `user/network` here; blank means NetIRC's default (the nick).
+
+The csproj copies `.env` to the build/publish output — **remove it from a publish before uploading anywhere**.
+
+The chat database is `chatting.db` under `Environment.SpecialFolder.LocalApplicationData` (`%LocalAppData%` on Windows, `$XDG_DATA_HOME` on Linux).
 
 No test projects exist yet. There is no formal lint step; verify changes with a build. The running app locks `DefinitelyHuman.exe`, so a full build fails to copy the exe while the bot is running — use `dotnet build ... -t:Compile` to compile-check without stopping it.
 
@@ -34,49 +40,65 @@ DefinitelyHuman/
   Program.cs               — startup wiring, env config, DI registration, web host
   Agent/
     ChatAgent.cs           — AI agent (Anthropic): attention-gated glances, prompt building, stateless model calls
+    ChatAgentOptions.cs    — API key, model, nick, EnableThinking, LogReasoning
     Attention.cs           — the focus model: a [0,1] value decayed lazily from timestamps (no loop)
-    AgentLog.cs            — in-memory ring buffer of the agent's decisions, for the dashboard
+    AgentLog.cs            — persists agent events to SQLite via a background drain task; raises Updated for the UI
   Data/
     ChattingContext.cs     — EF Core DbContext (SQLite)
-    Message.cs             — Message entity (Channel, Timestamp, Nick, Text, IsOwnMessage)
+    Message.cs             — chat line (Channel, Timestamp, Nick, Text, IsOwnMessage)
+    AgentEvent.cs          — agent event (Kind: Decision/Thinking/Error/ToolCall, Summary, Detail, optional MessageId)
+    CachedLinkPreview.cs   — persisted OpenGraph preview, keyed by URL
   Irc/
-    IrcBot.cs              — IRC client wrapper, DB logging, log reads, typing delay
+    IrcBot.cs              — IRC client wrapper, DB logging, log reads, typing delay, replay grace window
+    IrcBotOptions.cs       — nick, host, port, channel, password, username
     IrcBotService.cs       — BackgroundService wiring IrcBot's activity nudges to ChatAgent
+    UsernameConnection.cs  — NetIRC IConnection wrapper that rewrites the outgoing USER line (for soju)
+  Utilities/
+    LinkPreviewService.cs  — fetches + caches OpenGraph previews for URLs in chat (dashboard only)
   Web/
     App.razor              — Blazor root component (layout renders static; pages are interactive islands)
     Routes.razor           — routing
-    _Imports.razor          — shared Razor usings
+    _Imports.razor         — shared Razor usings
     Layout/
       MainLayout.razor     — page layout + sidebar nav
       FocusWidget.razor    — live focus gauge in the sidebar (interactive island, polls every 1s)
+    Components/Chat/
+      ChatVirtualize.razor(.cs/.js) — bottom-anchored virtualized list with per-item height tracking
     Pages/
-      Home.razor           — chat log dashboard
-      Reasoning.razor      — the agent's decision log
+      Home.razor           — the timeline: chat lines and agent events merged by timestamp, with link previews
       Error.razor, NotFound.razor
+Scripts/
+  ImportHalloyLog.cs       — file-based script: imports a Halloy log export into the chat database
 ```
 
-**NetIRC** is the IRC client library, referenced as a NuGet package (`NetIRC` v1.1.2). The IRC plumbing lives in `Irc/IrcBot.cs` (connect, channel-join, message logging, sending).
+**NetIRC** is the IRC client library, referenced as a NuGet package (`NetIRC` v1.1.2). The IRC plumbing lives in `Irc/IrcBot.cs` (connect, channel-join, message logging, sending). NetIRC always sends the nick as the IRC username and cannot parse IRCv3 message tags, so the client is constructed directly (not via its builder) to allow wrapping the connection.
 
 ## How the bot decides to talk
 
-The bot is **state-driven, not event-driven**: it does not react to individual messages. Every message is written to the SQLite log; `IrcBot` then fires a payload-light `ChannelActivity(line, mentionsMe)` nudge (the `line` is for the decision log; `mentionsMe` is the "highlight beep"). `ChatAgent` reacts to "the log changed":
+The bot is **state-driven, not event-driven**: it does not react to individual messages. Every message is written to the SQLite log; `IrcBot` then fires a payload-light `ChannelActivity(line, mentionsMe)` nudge (the `line` is for the decision log; `mentionsMe` is the "highlight beep", a case-insensitive substring match on the nick). `ChatAgent` reacts to "the log changed":
 
-1. **Attention** (`Attention.cs`) tracks a `focus` value in `[0,1]`, decayed lazily on read with a ~4 min half-life ("casual lurker"). A direct mention snaps focus to `1.0` (`Notice()`); replying restores it to `~0.9` (`Engaged()`); ambient chatter just lets it fade.
-2. On activity: a **mention** always schedules a glance; an **ambient** message schedules one only if a focus-weighted roll passes (`NoticesAmbient`) — otherwise the bot returns *before any model call* (no tokens spent on what it "didn't see").
+1. **Attention** (`Attention.cs`) tracks a `focus` value in `[0,1]`, decayed lazily on read with a ~4 min half-life ("casual lurker"). It starts at 0. A direct mention snaps focus to `1.0` (`Notice()`); replying restores it to `~0.9` (`Engaged()`); ambient chatter just lets it fade.
+2. On activity: a **mention** always schedules a glance; so does a **follow-up** (no mention, but focus ≥ `ActiveConversationFocus`, i.e. within a few minutes of the bot replying). An **ambient** message (lower focus) schedules one only if a focus-weighted roll passes (`NoticesAmbient`) — otherwise the bot returns *before any model call* (no tokens spent on what it "didn't see").
 3. **Debounce**: at most one glance is pending at a time (a `CancellationTokenSource`); a burst of messages collapses into one read+reply. A fresh ping during a lazy ambient glance reschedules it sooner.
-4. After a **notice delay** (mention: short padding capped ~1 min; ambient: scales up to ~2 min as focus drops), the glance reads the channel log **since the last engagement** (`_lastFocusedAt`), capped to the most recent ~150 messages (`IrcBotService.MaxBacklog`), with a `[... N earlier messages ...]` marker on overflow.
+4. After a **notice delay** (mention or follow-up: 1–4s; ambient: scales up to ~2 min as focus drops), the glance reads the channel log **since the last engagement** (`_lastFocusedAt`, in memory — reset to process start on restart), capped to the most recent ~150 messages (`IrcBotService.MaxBacklog`), with a `[... N earlier messages ...]` marker on overflow.
 5. The glance picks one of three instruction tiers by focus: **mention** (must respond), **active-convo** (focus ≥ `ActiveConversationFocus` = 0.5: respond if addressed/about you), **idle** (low focus: reluctant). The model returns a reply or `[SILENT]`.
 6. Model calls are **stateless** — a fresh `CreateSessionAsync()` per glance, so the bot's only memory is the backlog it just read (no unbounded session growth).
 
+**Bouncer replay**: a bouncer replays missed messages in a burst right after registration, without timestamps. Messages arriving within `IrcBot.ReplayWindow` (10s) of registration are logged but do not nudge the agent. They are logged with the current time, so they still show up as context on the next glance.
+
+Not implemented: tools (the `ToolCall` event kind is reserved), long-term memory, private messages, more than one channel. The agent never sees link contents.
+
 ## Key patterns
 
-- `IrcBot`, `ChatAgent`, and `AgentLog` are registered as singletons in DI — injectable into Blazor components.
+- `IrcBot`, `ChatAgent`, `AgentLog`, and `LinkPreviewService` are registered as singletons in DI — injectable into Blazor components.
 - `IrcBotService` (a `BackgroundService`) calls `agent.Bind(readLog, send)` to wire the agent's I/O, then subscribes to `bot.ChannelActivity`.
-- `IrcBot` creates a scoped `ChattingContext` per DB operation (avoids shared DbContext concurrency issues).
-- **Stateless model calls** with optional extended thinking (`enableThinking` flag, off by default — costs output tokens per glance) and console echo (`logReasoning` flag). The dashboard decision log is always captured regardless of `logReasoning`.
+- A fresh `ChattingContext` is created per DB operation (avoids shared DbContext concurrency issues).
+- **Agent events** go through `AgentLog.Log`, which is synchronous and non-blocking (safe inside the agent's locks): it queues the event and a single drain task writes it to SQLite. A "replied" event carries the `MessageId` of the line it produced so the timeline can attach the reasoning to the chat line.
+- **Extended thinking** (`ChatAgentOptions.EnableThinking`, 1024-token budget) and console echo (`LogReasoning`) exist but are not set in `Program.cs`, so both are off. The dashboard decision log is always captured regardless.
 - Model calls are serialized with a `SemaphoreSlim` (a person composes one reply at a time; the notice delays can otherwise overlap).
-- **UI notifications are fire-and-forget** (`_ = NotifyMessageLogged()`): a slow/disconnected Blazor circuit must never stall the IRC loop. (A disconnected circuit's JS interop blocks for the 60s default timeout — `Home.razor` also passes a short `TimeSpan` timeout to its JS interop calls to fail fast.)
-- The layout renders statically; components needing live updates (`FocusWidget`, `Reasoning`, `Home`) are `@rendermode InteractiveServer` islands. `FocusWidget` polls focus on a `Timer` created in `OnAfterRender` (not during prerender) and disposed on teardown.
+- **UI notifications are fire-and-forget** (`_ = NotifyMessageLogged()`): a slow/disconnected Blazor circuit must never stall the IRC loop.
+- The layout renders statically; components needing live updates (`FocusWidget`, `Home`) are `@rendermode InteractiveServer` islands. `FocusWidget` polls focus on a `Timer` created in `OnAfterRender` (not during prerender) and disposed on teardown. `Home` refreshes on `IrcBot.MessageLogged`, `AgentLog.Updated`, and `LinkPreviewService.PreviewReady`.
+- The timeline is paged from SQLite through `ChatVirtualize`'s `ItemsProvider` (a UNION of `Messages` and `AgentEvents` ordered by timestamp).
 - Typing delay simulates human speed (4–8 chars/sec + random pause).
 - Replies over 400 chars are discarded (IRC message limit).
 
@@ -85,11 +107,20 @@ The bot is **state-driven, not event-driven**: it does not react to individual m
 - **Attention feel**: `Attention` constructor — `halfLifeMinutes` (distractibility), `glanceFloor` (when a channel feels too dead to watch), `engagedFocus`, and the notice-delay formulas.
 - **Active-conversation threshold**: `ChatAgent.ActiveConversationFocus`.
 - **Backlog cap**: `IrcBotService.MaxBacklog`.
+- **Replay grace window**: `IrcBot.ReplayWindow`.
 - **Persona / reply judgment**: the system prompt and the three per-glance instruction tiers in `ChatAgent`.
+
+## Deployment
+
+Production runs on a Linux server behind a [soju](https://soju.im) bouncer, which holds the IRC connection so the bot can restart without leaving the channel.
+
+- soju listens on `localhost:6667` for the bot; the bot logs in with `IRC_USERNAME=<soju user>/<network>` and `IRC_PASSWORD=<soju password>`. soju handles the network login (SASL) and rejoins saved channels.
+- The bot runs as a systemd service from a framework-dependent `dotnet publish -c Release` output (needs the ASP.NET Core 10 runtime), with settings supplied as environment variables rather than a `.env` file.
+- The dashboard binds to `127.0.0.1:5000` there and has no authentication — reach it over an SSH tunnel, never expose it.
 
 ## Dependencies
 
 - **NetIRC** (v1.1.2, NuGet package) — IRC client
 - **Microsoft.Agents.AI.Anthropic** (1.8.0-preview) — Claude via Microsoft AI agent framework
-- **Microsoft.EntityFrameworkCore.Sqlite** — chat log persistence
+- **Microsoft.EntityFrameworkCore.Sqlite** — chat log, agent events, link preview cache
 - **dotenv.net** — `.env` file loading
