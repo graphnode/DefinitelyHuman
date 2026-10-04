@@ -17,6 +17,11 @@ public class IrcBot : IDisposable
 
     private const int MaxReplyLength = 400;
 
+    // A bouncer replays what we missed in a burst right after we connect, with no timestamps.
+    // Anything arriving inside this window is logged but doesn't nudge the agent.
+    private static readonly TimeSpan ReplayWindow = TimeSpan.FromSeconds(10);
+    private DateTime _registeredAt;
+
     /// <summary>
     /// The channel log changed. The string is the new line ("&lt;nick&gt; text", for logging),
     /// and the flag is the highlight "beep": the new line mentions the bot.
@@ -43,6 +48,7 @@ public class IrcBot : IDisposable
         
         _client.RegistrationCompleted += async (sender, _) =>
         {
+            _registeredAt = DateTime.UtcNow;
             if (sender is Client c)
                 await c.SendAsync(new JoinMessage(options.Channel));
         };
@@ -65,6 +71,9 @@ public class IrcBot : IDisposable
                         // direct mention (the highlight beep)?
                         await LogMessageAsync(ch.Name, msg.User.Nick, msg.Text, isOwn: false);
                         _ = NotifyMessageLogged();   // fire-and-forget: a slow UI subscriber must not stall the IRC loop
+
+                        if (DateTime.UtcNow - _registeredAt < ReplayWindow)
+                            continue;
 
                         bool mentionsMe = msg.Text.Contains(options.Nick, StringComparison.OrdinalIgnoreCase);
                         ChannelActivity?.Invoke($"<{msg.User.Nick}> {msg.Text}", mentionsMe);
