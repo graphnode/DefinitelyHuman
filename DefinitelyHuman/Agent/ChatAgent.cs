@@ -54,6 +54,7 @@ public class ChatAgent
     // the line it produced.
     private Func<string, DateTime, Task<string>>? _readLog;
     private Func<string, string, Task<int>>? _send;
+    private Func<string, bool> _isReadOnly = _ => false;
 
     // What is tracked per channel, as opposed to the shared attention.
     private sealed class ChannelState(DateTime startedAt)
@@ -145,10 +146,13 @@ public class ChatAgent
     /// <summary>Wires the channel I/O: how to read a channel's recent log and how to send a reply to it.</summary>
     /// <param name="readLog">Returns a channel's log since the given timestamp (already capped).</param>
     /// <param name="send">Sends a reply to a channel and returns its new message id.</param>
-    public void Bind(Func<string, DateTime, Task<string>> readLog, Func<string, string, Task<int>> send)
+    /// <param name="isReadOnly">True for channels the bot must never write to (shadow mode).</param>
+    public void Bind(Func<string, DateTime, Task<string>> readLog, Func<string, string, Task<int>> send,
+        Func<string, bool> isReadOnly)
     {
         _readLog = readLog;
         _send = send;
+        _isReadOnly = isReadOnly;
     }
 
     /// <summary>The bot's current attention level (0..1), decayed to now. For the dashboard.</summary>
@@ -327,6 +331,18 @@ public class ChatAgent
             {
                 _agentLog.Log(channel, AgentEventKind.Decision, $"glanced ({mode}, focus {focus:F2}) — decided to stay quiet", detail: notes);
                 LogConsole($"[{channel}] glanced ({mode}, focus {focus:F2}) — decided to stay quiet");
+                return;
+            }
+
+            // Shadow mode: in a read-only channel the reply is only recorded. The bookmark still
+            // advances, as if it had spoken, so the next glance doesn't answer the same lines
+            // again; but nothing was said, so it is not the conversation and focus is untouched.
+            if (_isReadOnly(channel))
+            {
+                lock (_glanceLock) { state.LastFocusedAt = DateTime.UtcNow; }
+                _agentLog.Log(channel, AgentEventKind.Decision,
+                    $"would have replied: \"{reply}\" ({mode}, focus {focus:F2}) — read-only channel", detail: notes);
+                LogConsole($"[{channel}] glanced ({mode}, focus {focus:F2}) — would have replied: \"{reply}\"");
                 return;
             }
 

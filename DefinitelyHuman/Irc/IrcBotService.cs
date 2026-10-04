@@ -21,7 +21,8 @@ public class IrcBotService(IrcBot bot, ChatAgent agent, LinkPreviewService previ
         agent.Bind(
             readLog: async (channel, since) => await previews.AnnotateAsync(
                 await bot.ReadLogSinceAsync(channel, since, MaxBacklog, ContextTail), LinkPreviewWait),
-            send: bot.SendMessageAsync);
+            send: bot.SendMessageAsync,
+            isReadOnly: bot.IsReadOnly);
 
         // The bot doesn't get handed messages — just a nudge that the log changed (plus the
         // line itself, for the decision log).

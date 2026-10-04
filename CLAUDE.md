@@ -23,6 +23,7 @@ Settings are loaded from `.env` in the working directory via `dotenv.net` (gitig
 - `ANTHROPIC_MODEL` (default `claude-haiku-4-5-20251001`)
 - `IRC_HOST` (default `localhost`), `IRC_PORT` (default `6667`), `IRC_CHANNEL` (default `#clankersunite`; the home channel, joined on connect), `IRC_NICK` (default `DefinitelyHuman`)
 - `IRC_PASSWORD` (optional) — sent as the IRC server password (`PASS`); blank/absent means none. NetIRC has no SASL support.
+- `IRC_READONLY_CHANNELS` (optional) - comma-separated channels the bot may join and read but must never write to (shadow mode, see below).
 - `IRC_USERNAME` (optional) — IRC username sent at registration, when it must differ from the nick. soju needs `user/network` here; blank means NetIRC's default (the nick).
 
 The csproj copies `.env` to the build/publish output — **remove it from a publish before uploading anywhere**.
@@ -52,7 +53,7 @@ DefinitelyHuman/
     IrcBot.cs              — IRC client wrapper, DB logging, log reads, typing delay, replay grace window
     IrcBotOptions.cs       — nick, host, port, channel, password, username
     IrcBotService.cs       — BackgroundService wiring IrcBot's activity nudges to ChatAgent
-    UsernameConnection.cs  — NetIRC IConnection wrapper that rewrites the outgoing USER line (for soju)
+    OutgoingFilterConnection.cs — NetIRC IConnection wrapper: every outgoing line passes one filter (USER rewrite for soju, read-only channel block)
   Utilities/
     LinkPreviewService.cs  — fetches + caches OpenGraph previews for URLs in chat (dashboard only)
   Web/
@@ -90,6 +91,8 @@ The bot is **state-driven, not event-driven**: it does not react to individual m
 **Several channels, one attention**: focus is global (one person, one pair of eyes), but the conversation is per channel. `ChatAgent` keeps a `ChannelState` per channel (unread bookmark, pending glance) and one `_conversationChannel`, the channel it last spoke in. "Mid-conversation" (always notice, 1–4s glance, the active-convo tier) applies only there; in every other channel a message goes through the ambient roll on the shared focus and the idle tier. A mention in any channel snaps focus to 1.0 and gets the mention tier there. Replies and decision events go to the channel the glance was for.
 
 **Joining and leaving**: `IrcBot.JoinAsync`/`PartAsync` send the commands; `IrcBot.JoinedChannels` is tracked from the server's own JOIN/PART/KICK lines about the bot (so it includes channels a bouncer rejoins on connect) and `ChannelsChanged` fires when it changes. The sidebar's join box and leave buttons call these. Behind soju, a join or part is remembered by the bouncer; without one, only `IRC_CHANNEL` is joined on start.
+
+**Read-only channels (shadow mode)**: in a channel listed in `IRC_READONLY_CHANNELS` the bot glances and asks the model as usual, but a reply is only recorded as a `would have replied: "..."` event. The channel's bookmark still advances, but it never becomes the conversation channel and the reply does not refresh focus. The guarantee does not rest on the agent: `OutgoingFilterConnection.WritesTo` drops any PRIVMSG/NOTICE/TAGMSG/TOPIC/KICK/MODE/INVITE aimed at a read-only channel at the last point before the socket (and logs a warning), and `IrcBot.SendMessageAsync` refuses as well. Set the variable before joining such a channel.
 
 Not implemented: tools (the `ToolCall` event kind is reserved), long-term memory, private messages.
 

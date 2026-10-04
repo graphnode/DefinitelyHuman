@@ -28,4 +28,20 @@ public struct IrcBotOptions
         get => field;
         set => field = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
+
+    /// <summary>
+    /// Channels the bot may sit in and read but must never write to. There it runs in shadow
+    /// mode: it decides as usual, and what it would have said is only recorded.
+    /// </summary>
+    public IReadOnlySet<string> ReadOnlyChannels
+    {
+        get => field ?? new HashSet<string>();
+        set;
+    }
+
+    /// <summary>Parses a comma- or space-separated channel list, e.g. "#gamedev, #other".</summary>
+    public static IReadOnlySet<string> ParseChannels(string? list) =>
+        new HashSet<string>(
+            (list ?? "").Split([',', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+            StringComparer.OrdinalIgnoreCase);
 }

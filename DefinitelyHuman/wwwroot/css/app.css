@@ -134,6 +134,18 @@ body {
     opacity: 0.6;
 }
 
+/* Marks a channel the bot only shadows */
+.sidebar-nav .nav-readonly {
+    margin-left: auto;
+    padding: 0 0.3rem;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--orange);
+    font-size: 0.65rem;
+    font-style: normal;
+    white-space: nowrap;
+}
+
 .sidebar-nav .nav-leave {
     flex: 0 0 auto;
     padding: 0 0.75rem;

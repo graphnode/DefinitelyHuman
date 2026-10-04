@@ -73,8 +73,22 @@ public class IrcBot : IDisposable
             lock (_joined) _joined.Clear();
             ChannelsChanged?.Invoke();
         };
-        if (options.Username is not null)
-            connection = new UsernameConnection(connection, options.Username);
+
+        // Every outgoing line goes through this filter, the last point before the socket. It is
+        // what guarantees nothing is ever written to a read-only channel, whoever tries to send.
+        connection = new OutgoingFilterConnection(connection, line =>
+        {
+            if (OutgoingFilterConnection.WritesTo(line, options.ReadOnlyChannels))
+            {
+                logger.LogWarning("Blocked a write to a read-only channel: {Line}", line.Trim());
+                return null;
+            }
+
+            return options.Username is null ? line : OutgoingFilterConnection.RewriteUsername(line, options.Username);
+        });
+
+        if (options.ReadOnlyChannels.Count > 0)
+            logger.LogInformation("Read-only channels (never written to): {Channels}", string.Join(", ", options.ReadOnlyChannels));
 
         _client = new Client(new User(options.Nick, options.RealName), options.Password, connection);
         
@@ -139,6 +153,9 @@ public class IrcBot : IDisposable
             }
         };
     }
+
+    /// <summary>True for a channel the bot may read but must never write to (shadow mode).</summary>
+    public bool IsReadOnly(string channel) => _options.ReadOnlyChannels.Contains(channel);
 
     private bool IsMe(string? nick) => string.Equals(nick, _options.Nick, StringComparison.OrdinalIgnoreCase);
 
@@ -207,6 +224,13 @@ public class IrcBot : IDisposable
     {
         if (string.IsNullOrEmpty(text))
             return 0;
+
+        // The agent doesn't send here in the first place; this and the connection filter are the backstops.
+        if (IsReadOnly(channel))
+        {
+            _logger.LogWarning("Refused to send to read-only channel {Channel}.", channel);
+            return 0;
+        }
 
         if (text.Length > MaxReplyLength)
         {

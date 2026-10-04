@@ -15,7 +15,13 @@
         bool joined = _joined.Contains(channel);
         <div class="nav-channel">
             <a class="nav-sub @(active ? "active" : null) @(joined ? null : "parted")" href="c/@Slug(channel)"
-               aria-current="@(active ? "page" : null)" title="@(joined ? null : "The bot is not in this channel; this is its log")">@channel</a>
+               aria-current="@(active ? "page" : null)" title="@(joined ? null : "The bot is not in this channel; this is its log")">
+                @channel
+                @if (Bot.IsReadOnly(channel))
+                {
+                    <span class="nav-readonly" title="Read-only: the bot never writes here. What it would have said is only recorded.">read-only</span>
+                }
+            </a>
             @if (joined)
             {
                 <button type="button" class="nav-leave" title="Leave @channel" aria-label="Leave @channel"
