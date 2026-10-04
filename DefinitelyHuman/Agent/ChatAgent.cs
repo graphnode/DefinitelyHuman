@@ -80,8 +80,9 @@ public class ChatAgent
                 - Never be overly helpful or eager. You're a person hanging out, not a customer service rep.
 
                 CONTEXT:
-                - You are shown the channel log since you last paid attention, in the format "<nick> message".
-                - Lines from you appear as "<{options.Nick}> ...". A leading "[... N earlier messages ...]" marker means you skimmed past older history.
+                - You are shown the channel log in the format "<nick> message", in two parts: a few earlier lines you have already read, then everything since you last looked (which may start with your own last reply).
+                - The earlier lines are only there so you can tell who was talking to whom. Don't reply to them again.
+                - Lines from you appear as "<{options.Nick}> ...". A "[... N earlier messages ...]" marker means you skimmed past older history.
                 - Respond to the current state of the conversation, not necessarily the last line.
                 - When you decide NOT to respond, reply with exactly: [SILENT]
                 """
@@ -223,12 +224,13 @@ public class ChatAgent
             {
                 mode = "active-convo";
                 instruction = "You're in an active back-and-forth in this channel and just glanced back. "
-                    + "If the latest messages are addressed to you, ask you something, react to you, or comment "
-                    + "on you, answer like a normal person mid-conversation would — going quiet on someone who's "
-                    + "talking to you reads as rude or robotic. If you were the last one to speak and someone then "
-                    + "says something, they are talking to you, even if they don't use your nick — especially if "
-                    + "you just asked them a question. Reply with [SILENT] only if the recent messages "
-                    + "are clearly between other people and don't involve you.";
+                    + "Work out who each new message is meant for. Nobody keeps typing your nick once a "
+                    + "conversation is going, so judge from the content and the flow: someone you were just "
+                    + "talking with who carries on, answers your question, or reacts to what you said is talking "
+                    + "to you. Someone else addressing another person, or carrying on a separate thread, is not. "
+                    + "When a message is for you or about you, answer like a normal person mid-conversation "
+                    + "would — going quiet on someone who's talking to you reads as rude or robotic. Reply with "
+                    + "[SILENT] only if the new messages are clearly not meant for you.";
             }
             else
             {
@@ -237,7 +239,7 @@ public class ChatAgent
                     + "genuinely deserves a remark from you, otherwise reply with [SILENT].";
             }
 
-            var prompt = $"{instruction}\n\nChannel log since you last joined in:\n{backlog}";
+            var prompt = $"{instruction}\n\nChannel log:\n{backlog}";
 
             string? reply = await GenerateAsync(prompt);
             if (string.IsNullOrEmpty(reply) || reply.Contains("[SILENT]"))

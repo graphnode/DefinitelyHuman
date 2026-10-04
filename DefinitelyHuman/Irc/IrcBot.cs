@@ -85,9 +85,11 @@ public class IrcBot : IDisposable
 
     /// <summary>
     /// Reads the channel log written after <paramref name="since"/>, oldest-first, capped to the
-    /// most recent <paramref name="maxMessages"/> (a marker replaces older overflow).
+    /// most recent <paramref name="maxMessages"/> (a marker replaces older overflow). The last
+    /// <paramref name="contextMessages"/> lines from before <paramref name="since"/> are prepended
+    /// under their own heading, so the reader can tell who was talking to whom. Empty if nothing is new.
     /// </summary>
-    public async Task<string> ReadLogSinceAsync(DateTime since, int maxMessages)
+    public async Task<string> ReadLogSinceAsync(DateTime since, int maxMessages, int contextMessages)
     {
         try
         {
@@ -104,7 +106,23 @@ public class IrcBot : IDisposable
                 .ToListAsync();
             recent.Reverse(); // back to chronological order
 
+            var earlier = await db.Messages
+                .Where(m => m.Channel == _options.Channel && m.Timestamp <= since)
+                .OrderByDescending(m => m.Timestamp)
+                .Take(contextMessages)
+                .ToListAsync();
+            earlier.Reverse();
+
             var sb = new StringBuilder();
+            if (earlier.Count > 0)
+            {
+                sb.AppendLine("Earlier, already read:");
+                foreach (var m in earlier)
+                    sb.AppendLine($"<{m.Nick}> {m.Text}");
+                sb.AppendLine();
+            }
+
+            sb.AppendLine("Since you last looked:");
             if (total > recent.Count)
                 sb.AppendLine($"[... {total - recent.Count} earlier messages you missed ...]");
             foreach (var m in recent)
