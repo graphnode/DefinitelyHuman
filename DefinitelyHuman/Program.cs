@@ -46,7 +46,7 @@ builder.Services.AddRazorComponents()
 
 // Agent event log: persists glance decisions, thinking, and (later) tool calls to the DB,
 // where they're merged with the chat log into the dashboard timeline.
-builder.Services.AddSingleton(sp => new AgentLog(ircBotOptions.Channel, sp.GetRequiredService<ILogger<AgentLog>>()));
+builder.Services.AddSingleton<AgentLog>();
 
 // enableThinking costs extra (output) tokens on every glance — flip on for better answers,
 // off to save tokens. logReasoning only echoes the decision log + thinking to the console;

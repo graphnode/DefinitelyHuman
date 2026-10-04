@@ -13,7 +13,6 @@ namespace DefinitelyHuman.Agent;
 /// </summary>
 public sealed class AgentLog : IDisposable
 {
-    private readonly string _channel;
     private readonly ILogger<AgentLog> _logger;
     private readonly Channel<AgentEvent> _queue = System.Threading.Channels.Channel.CreateUnbounded<AgentEvent>(
         new UnboundedChannelOptions { SingleReader = true });
@@ -22,9 +21,8 @@ public sealed class AgentLog : IDisposable
     /// <summary>Raised after an event is committed so the dashboard can refresh.</summary>
     public event Action? Updated;
 
-    public AgentLog(string channel, ILogger<AgentLog> logger)
+    public AgentLog(ILogger<AgentLog> logger)
     {
-        _channel = channel;
         _logger = logger;
         _drain = Task.Run(DrainAsync);
     }
@@ -32,17 +30,18 @@ public sealed class AgentLog : IDisposable
     /// <summary>
     /// Records an agent event. Non-blocking — the event is persisted by the drain task.
     /// </summary>
+    /// <param name="channel">The channel the event is about.</param>
     /// <param name="kind">What kind of event this is.</param>
     /// <param name="summary">One-line description, always shown in the timeline.</param>
     /// <param name="detail">Optional long-form detail (full thinking, tool args+results).</param>
     /// <param name="messageId">The chat message this event produced, if any.</param>
     /// <param name="at">Override the timestamp (defaults to now); use to place an event just before the message it produced.</param>
-    public void Log(AgentEventKind kind, string summary, string? detail = null, int? messageId = null, DateTime? at = null)
+    public void Log(string channel, AgentEventKind kind, string summary, string? detail = null, int? messageId = null, DateTime? at = null)
     {
         var evt = new AgentEvent
         {
             Timestamp = at ?? DateTime.UtcNow,
-            Channel = _channel,
+            Channel = channel,
             Kind = kind,
             Summary = Truncate(summary, 512),
             Detail = detail,

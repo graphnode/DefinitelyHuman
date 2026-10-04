@@ -23,15 +23,29 @@ public class IrcBot : IDisposable
     private DateTime _registeredAt;
 
     /// <summary>
-    /// The channel log changed. The string is the new line ("&lt;nick&gt; text", for logging),
-    /// and the flag is the highlight "beep": the new line mentions the bot.
+    /// A channel's log changed. Arguments: the channel, the new line ("&lt;nick&gt; text", for
+    /// logging), and the highlight "beep": the new line mentions the bot.
     /// </summary>
-    public event Action<string, bool>? ChannelActivity;
+    public event Action<string, string, bool>? ChannelActivity;
+
+    /// <summary>The set of channels the bot is in changed (joined, left, kicked, or disconnected).</summary>
+    public event Action? ChannelsChanged;
+
+    // Channels the bot is in right now, as the server tells it. With a bouncer this includes the
+    // ones the bouncer rejoins for us on connect.
+    private readonly HashSet<string> _joined = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Raised after a message is written to the log, so the web dashboard can refresh.</summary>
     public event Func<Task>? MessageLogged;
 
+    /// <summary>The configured home channel: joined on connect and shown first in the dashboard.</summary>
     public string Channel => _options.Channel;
+
+    /// <summary>The channels the bot is in right now.</summary>
+    public IReadOnlyList<string> JoinedChannels
+    {
+        get { lock (_joined) return [.. _joined]; }
+    }
     public string Nick => _options.Nick;
 
     /// <summary>The host:port this process connects to: the IRC server, or a bouncer in front of it.</summary>
@@ -53,7 +67,12 @@ public class IrcBot : IDisposable
         
         // Built by hand (same constructor the NetIRC builder uses) so the connection can be wrapped.
         IConnection connection = new TcpClientConnection(options.Host, options.Port);
-        connection.Disconnected += (_, _) => IsConnected = false;
+        connection.Disconnected += (_, _) =>
+        {
+            IsConnected = false;
+            lock (_joined) _joined.Clear();
+            ChannelsChanged?.Invoke();
+        };
         if (options.Username is not null)
             connection = new UsernameConnection(connection, options.Username);
 
@@ -65,6 +84,29 @@ public class IrcBot : IDisposable
             IsConnected = true;
             if (sender is Client c)
                 await c.SendAsync(new JoinMessage(options.Channel));
+        };
+
+        // Track which channels we are in from the server's own JOIN/PART/KICK lines about us.
+        _client.IRCMessageParsed += (_, message) =>
+        {
+            string? channel = message.Parameters.FirstOrDefault();
+            if (channel is null)
+                return;
+
+            bool changed;
+            lock (_joined)
+            {
+                changed = message.Command switch
+                {
+                    "JOIN" when IsMe(message.Prefix?.From) => _joined.Add(channel),
+                    "PART" when IsMe(message.Prefix?.From) => _joined.Remove(channel),
+                    "KICK" when IsMe(message.Parameters.ElementAtOrDefault(1)) => _joined.Remove(channel),
+                    _ => false,
+                };
+            }
+
+            if (changed)
+                ChannelsChanged?.Invoke();
         };
 
         _client.Channels.CollectionChanged += (o1, e) =>
@@ -91,25 +133,33 @@ public class IrcBot : IDisposable
                             continue;
 
                         bool mentionsMe = msg.Text.Contains(options.Nick, StringComparison.OrdinalIgnoreCase);
-                        ChannelActivity?.Invoke($"<{msg.User.Nick}> {msg.Text}", mentionsMe);
+                        ChannelActivity?.Invoke(ch.Name, $"<{msg.User.Nick}> {msg.Text}", mentionsMe);
                     }
                 };
             }
         };
     }
 
+    private bool IsMe(string? nick) => string.Equals(nick, _options.Nick, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Asks the server to join a channel. <see cref="JoinedChannels"/> updates when it confirms.</summary>
+    public Task JoinAsync(string channel) => _client.SendAsync(new JoinMessage(channel));
+
+    /// <summary>Leaves a channel. Behind a bouncer this also stops it rejoining the channel for us.</summary>
+    public Task PartAsync(string channel) => _client.SendAsync(new PartMessage(channel));
+
     /// <summary>
-    /// Reads the channel log written after <paramref name="since"/>, oldest-first, capped to the
+    /// Reads a channel's log written after <paramref name="since"/>, oldest-first, capped to the
     /// most recent <paramref name="maxMessages"/> (a marker replaces older overflow). The last
     /// <paramref name="contextMessages"/> lines from before <paramref name="since"/> are prepended
     /// under their own heading, so the reader can tell who was talking to whom. Empty if nothing is new.
     /// </summary>
-    public async Task<string> ReadLogSinceAsync(DateTime since, int maxMessages, int contextMessages)
+    public async Task<string> ReadLogSinceAsync(string channel, DateTime since, int maxMessages, int contextMessages)
     {
         try
         {
             await using var db = new ChattingContext();
-            var query = db.Messages.Where(m => m.Channel == _options.Channel && m.Timestamp > since);
+            var query = db.Messages.Where(m => m.Channel == channel && m.Timestamp > since);
 
             int total = await query.CountAsync();
             if (total == 0)
@@ -122,7 +172,7 @@ public class IrcBot : IDisposable
             recent.Reverse(); // back to chronological order
 
             var earlier = await db.Messages
-                .Where(m => m.Channel == _options.Channel && m.Timestamp <= since)
+                .Where(m => m.Channel == channel && m.Timestamp <= since)
                 .OrderByDescending(m => m.Timestamp)
                 .Take(contextMessages)
                 .ToListAsync();
@@ -152,10 +202,8 @@ public class IrcBot : IDisposable
         }
     }
 
-    /// <summary>Sends a reply to the channel; returns the logged message's id, or 0 if discarded.</summary>
-    public Task<int> SendMessageAsync(string text) => SendMessageAsync(_options.Channel, text);
-
-    private async Task<int> SendMessageAsync(string channel, string text)
+    /// <summary>Sends a reply to a channel; returns the logged message's id, or 0 if discarded.</summary>
+    public async Task<int> SendMessageAsync(string channel, string text)
     {
         if (string.IsNullOrEmpty(text))
             return 0;

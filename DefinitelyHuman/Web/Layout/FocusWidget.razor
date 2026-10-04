@@ -14,7 +14,7 @@
     <div class="focus-bar" role="meter" aria-label="Focus" aria-valuemin="0" aria-valuemax="1"
          aria-valuenow="@_focus.ToString("F2", CultureInfo.InvariantCulture)" aria-valuetext="@($"{_focus:F2}, {Note}")">
         <div class="focus-bar-fill" style="width:@(Pct)%; background:@BarColor;"></div>
-        @* Above this mark the bot treats the channel as a conversation it is in. *@
+        @* Above this mark the bot treats the channel it last spoke in as a conversation it is in. *@
         <div class="focus-bar-mark" style="left:@((int)(ChatAgent.ActiveConversationFocus * 100))%"></div>
     </div>
     <div class="focus-note">@Note</div>
@@ -28,7 +28,8 @@
 
 @code {
     private double _focus;
-    private DateTime? _nextGlanceAt;
+    private (string Channel, DateTime At)? _nextGlance;
+    private string? _conversation;
     private bool _connected;
     private DateTime? _lastLineAt;
     private Timer? _timer;
@@ -56,7 +57,8 @@
     private void Poll()
     {
         _focus = Agent.CurrentFocus;
-        _nextGlanceAt = Agent.NextGlanceAt;
+        _nextGlance = Agent.NextGlance;
+        _conversation = Agent.ConversationChannel;
         _connected = Bot.IsConnected;
         _lastLineAt = Bot.LastLineAt;
     }
@@ -85,11 +87,12 @@
     };
 
     // What the bar's colour means, in words; a scheduled glance takes over while it is pending.
-    private string Note => _nextGlanceAt is { } at
-        ? $"glancing in {Math.Max(0, (int)Math.Ceiling((at - DateTime.UtcNow).TotalSeconds))}s"
+    // Focus is shared by every channel, so the note says which one it is about.
+    private string Note => _nextGlance is { } next
+        ? $"glancing at {next.Channel} in {Math.Max(0, (int)Math.Ceiling((next.At - DateTime.UtcNow).TotalSeconds))}s"
         : _focus switch
         {
-            >= ChatAgent.ActiveConversationFocus => "in conversation",
+            >= ChatAgent.ActiveConversationFocus => _conversation is null ? "paying attention" : $"in conversation in {_conversation}",
             >= 0.15 => "fading",
             _ => "not watching",
         };

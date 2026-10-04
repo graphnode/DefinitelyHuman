@@ -19,8 +19,8 @@ public class IrcBotService(IrcBot bot, ChatAgent agent, LinkPreviewService previ
     {
         // Wire the agent's I/O: read the log since it was last involved and speak to the channel.
         agent.Bind(
-            readLog: async since => await previews.AnnotateAsync(
-                await bot.ReadLogSinceAsync(since, MaxBacklog, ContextTail), LinkPreviewWait),
+            readLog: async (channel, since) => await previews.AnnotateAsync(
+                await bot.ReadLogSinceAsync(channel, since, MaxBacklog, ContextTail), LinkPreviewWait),
             send: bot.SendMessageAsync);
 
         // The bot doesn't get handed messages — just a nudge that the log changed (plus the

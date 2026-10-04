@@ -41,29 +41,41 @@ public class ChatAgent
         }
         """).RootElement.Clone();
 
-    // A human's wandering attention to the channel. Replaces the old active-conversation
-    // window and chime-in throttle: replying keeps focus high, and focus fading is what
+    // A human's wandering attention to the IRC client. One person has one attention, so this is
+    // shared by every channel: replying anywhere keeps focus high, and focus fading is what
     // stops the bot chiming in.
     private readonly Attention _attention = new();
 
     // Serialize model calls — a person composes one reply at a time.
     private readonly SemaphoreSlim _modelLock = new(1, 1);
 
-    // I/O bound at startup: read the recent log (given a "since" timestamp) and send a reply.
-    // _send returns the new message's id so a "replied" event can link to the line it produced.
-    private Func<DateTime, Task<string>>? _readLog;
-    private Func<string, Task<int>>? _send;
+    // I/O bound at startup: read a channel's recent log (given a "since" timestamp) and send a
+    // reply to a channel. _send returns the new message's id so a "replied" event can link to
+    // the line it produced.
+    private Func<string, DateTime, Task<string>>? _readLog;
+    private Func<string, string, Task<int>>? _send;
 
-    // Debounce: at most one glance is ever scheduled. New activity is absorbed by the
-    // pending glance, so a burst of messages becomes a single read + reply.
+    // What is tracked per channel, as opposed to the shared attention.
+    private sealed class ChannelState(DateTime startedAt)
+    {
+        // Debounce: at most one glance is scheduled per channel. New activity is absorbed by
+        // the pending glance, so a burst of messages becomes a single read + reply.
+        public CancellationTokenSource? PendingGlance;
+        public bool PendingHighlight;
+        public DateTime? NextGlanceAt;
+
+        // "Last really focused": the bookmark for unread history. Only advances when the bot
+        // actually engages there, so a glance reads the whole conversation since it was last involved.
+        public DateTime LastFocusedAt = startedAt;
+    }
+
     private readonly Lock _glanceLock = new();
-    private CancellationTokenSource? _pendingGlance;
-    private bool _pendingHighlight;
-    private DateTime? _nextGlanceAt;
+    private readonly Dictionary<string, ChannelState> _channels = new(StringComparer.OrdinalIgnoreCase);
+    private readonly DateTime _startedAt = DateTime.UtcNow;
 
-    // "Last really focused": the bookmark for unread history. Only advances when the bot
-    // actually engages, so a glance reads the whole conversation since it was last involved.
-    private DateTime _lastFocusedAt = DateTime.UtcNow;
+    // The channel the bot last spoke in. High focus only means "mid-conversation" there; in any
+    // other channel it just means the bot is at its client and likelier to notice things.
+    private string? _conversationChannel;
 
     // Above this focus, a glance is treated as being mid-conversation (respond if addressed)
     // rather than an idle peek (reluctant). ~0.5 ≈ within a few minutes of last engaging.
@@ -130,10 +142,10 @@ public class ChatAgent
         }
     }
 
-    /// <summary>Wires the channel I/O: how to read the recent log and how to send a reply.</summary>
-    /// <param name="readLog">Returns the channel log since the given timestamp (already capped).</param>
-    /// <param name="send">Sends a reply to the channel and returns its new message id.</param>
-    public void Bind(Func<DateTime, Task<string>> readLog, Func<string, Task<int>> send)
+    /// <summary>Wires the channel I/O: how to read a channel's recent log and how to send a reply to it.</summary>
+    /// <param name="readLog">Returns a channel's log since the given timestamp (already capped).</param>
+    /// <param name="send">Sends a reply to a channel and returns its new message id.</param>
+    public void Bind(Func<string, DateTime, Task<string>> readLog, Func<string, string, Task<int>> send)
     {
         _readLog = readLog;
         _send = send;
@@ -142,75 +154,106 @@ public class ChatAgent
     /// <summary>The bot's current attention level (0..1), decayed to now. For the dashboard.</summary>
     public double CurrentFocus => _attention.Current();
 
-    /// <summary>When the pending glance will fire, or null if none is scheduled. For the dashboard.</summary>
-    public DateTime? NextGlanceAt
+    /// <summary>The soonest pending glance and the channel it is for, or null if none is scheduled. For the dashboard.</summary>
+    public (string Channel, DateTime At)? NextGlance
     {
-        get { lock (_glanceLock) return _nextGlanceAt; }
+        get
+        {
+            lock (_glanceLock)
+            {
+                (string Channel, DateTime At)? next = null;
+                foreach (var (channel, state) in _channels)
+                {
+                    if (state.NextGlanceAt is { } at && (next is null || at < next.Value.At))
+                        next = (channel, at);
+                }
+                return next;
+            }
+        }
     }
 
+    /// <summary>The channel the bot is mid-conversation in, or null once focus has faded. For the dashboard.</summary>
+    public string? ConversationChannel
+    {
+        get
+        {
+            lock (_glanceLock)
+                return _attention.Current() >= ActiveConversationFocus ? _conversationChannel : null;
+        }
+    }
+
+    // Must be called under _glanceLock.
+    private bool InConversation(string channel, double focus) =>
+        focus >= ActiveConversationFocus
+        && string.Equals(channel, _conversationChannel, StringComparison.OrdinalIgnoreCase);
+
     /// <summary>
-    /// The channel log changed. <paramref name="mentionsMe"/> is the client's highlight beep:
+    /// A channel's log changed. <paramref name="mentionsMe"/> is the client's highlight beep:
     /// a mention forces attention regardless of focus; otherwise focus decides whether to glance.
     /// </summary>
+    /// <param name="channel">The channel the line was said in.</param>
     /// <param name="line">The new line, for the decision log only ("&lt;nick&gt; text").</param>
     /// <param name="mentionsMe"></param>
-    public void OnChannelActivity(string line, bool mentionsMe)
+    public void OnChannelActivity(string channel, string line, bool mentionsMe)
     {
         TimeSpan delay;
         CancellationTokenSource cts;
 
         lock (_glanceLock)
         {
-            bool wasHighlight = _pendingHighlight;
+            if (!_channels.TryGetValue(channel, out var state))
+                _channels[channel] = state = new ChannelState(_startedAt);
+
+            bool wasHighlight = state.PendingHighlight;
             if (mentionsMe)
             {
                 _attention.Notice();
-                _pendingHighlight = true;
+                state.PendingHighlight = true;
             }
 
-            if (_pendingGlance is not null)
+            if (state.PendingGlance is not null)
             {
                 // A glance is already coming and will read the whole backlog when it fires.
                 // The only reason to reschedule is a fresh ping: you'd look sooner than a lazy
                 // ambient glance would have. Otherwise this update is already covered.
                 if (mentionsMe && !wasHighlight)
                 {
-                    _pendingGlance.Cancel();
-                    LogDecision($"pinged by \"{line}\" while mid-glance — looking sooner");
+                    state.PendingGlance.Cancel();
+                    LogDecision(channel, $"pinged by \"{line}\" while mid-glance — looking sooner");
                 }
                 else
                 {
-                    LogDecision($"saw \"{line}\" — already about to glance, will include it");
+                    LogDecision(channel, $"saw \"{line}\" — already about to glance, will include it");
                     return;
                 }
             }
             else
             {
-                // Mid-conversation you read every line; only when attention has drifted is
-                // noticing left to chance.
+                // Mid-conversation you read every line; elsewhere, or when attention has
+                // drifted, noticing is left to chance.
                 double f0 = _attention.Current();
-                if (!mentionsMe && f0 < ActiveConversationFocus && !_attention.NoticesAmbient(f0))
+                if (!mentionsMe && !InConversation(channel, f0) && !_attention.NoticesAmbient(f0))
                 {
-                    LogDecision($"ignored \"{line}\" — didn't notice (focus {f0:F2})");
+                    LogDecision(channel, $"ignored \"{line}\" — didn't notice (focus {f0:F2})");
                     return;
                 }
             }
 
             double focus = _attention.Current();
-            // A follow-up: no ping, but you're still in the conversation, so you look right away.
-            bool followUp = !_pendingHighlight && focus >= ActiveConversationFocus;
-            delay = _pendingHighlight || followUp ? _attention.MentionNoticeDelay() : _attention.AmbientNoticeDelay(focus);
+            // A follow-up: no ping, but you're still in the conversation here, so you look right away.
+            bool followUp = !state.PendingHighlight && InConversation(channel, focus);
+            delay = state.PendingHighlight || followUp ? _attention.MentionNoticeDelay() : _attention.AmbientNoticeDelay(focus);
             cts = new CancellationTokenSource();
-            _pendingGlance = cts;
-            _nextGlanceAt = DateTime.UtcNow + delay;
-            LogDecision($"noticed \"{line}\" — glancing in {delay.TotalSeconds:F0}s " +
-                        $"({(_pendingHighlight ? "mention" : followUp ? "follow-up" : "ambient")}, focus {focus:F2})");
+            state.PendingGlance = cts;
+            state.NextGlanceAt = DateTime.UtcNow + delay;
+            LogDecision(channel, $"noticed \"{line}\" — glancing in {delay.TotalSeconds:F0}s " +
+                        $"({(state.PendingHighlight ? "mention" : followUp ? "follow-up" : "ambient")}, focus {focus:F2})");
         }
 
-        _ = GlanceAsync(delay, cts);
+        _ = GlanceAsync(channel, delay, cts);
     }
 
-    private async Task GlanceAsync(TimeSpan delay, CancellationTokenSource cts)
+    private async Task GlanceAsync(string channel, TimeSpan delay, CancellationTokenSource cts)
     {
         try
         {
@@ -222,29 +265,35 @@ public class ChatAgent
         }
 
         bool highlight;
+        bool inConversation;
+        double focus;
         DateTime since;
+        ChannelState state;
         lock (_glanceLock)
         {
-            if (!ReferenceEquals(_pendingGlance, cts))
+            state = _channels[channel];
+            if (!ReferenceEquals(state.PendingGlance, cts))
                 return; // we were replaced between the delay firing and acquiring the lock
 
-            highlight = _pendingHighlight;
-            since = _lastFocusedAt;
-            _pendingGlance = null;
-            _nextGlanceAt = null;
-            _pendingHighlight = false;
+            highlight = state.PendingHighlight;
+            since = state.LastFocusedAt;
+            state.PendingGlance = null;
+            state.NextGlanceAt = null;
+            state.PendingHighlight = false;
+
+            focus = _attention.Current();
+            inConversation = InConversation(channel, focus);
         }
 
         try
         {
-            string backlog = _readLog is null ? "" : await _readLog(since);
+            string backlog = _readLog is null ? "" : await _readLog(channel, since);
             if (string.IsNullOrWhiteSpace(backlog))
             {
-                LogDecision("glanced — nothing new in the log");
+                LogDecision(channel, "glanced — nothing new in the log");
                 return;
             }
 
-            double focus = _attention.Current();
             string mode;
             string instruction;
             if (highlight)
@@ -252,7 +301,7 @@ public class ChatAgent
                 mode = "mention";
                 instruction = "You were directly addressed and just looked at the channel. You MUST respond.";
             }
-            else if (focus >= ActiveConversationFocus)
+            else if (inConversation)
             {
                 mode = "active-convo";
                 instruction = "You're in an active back-and-forth in this channel and just glanced back. "
@@ -271,32 +320,36 @@ public class ChatAgent
                     + "genuinely deserves a remark from you, otherwise stay quiet.";
             }
 
-            var prompt = $"{instruction}\n\nChannel log:\n{backlog}";
+            var prompt = $"{instruction}\n\nChannel log of {channel}:\n{backlog}";
 
-            var (reply, notes) = await GenerateAsync(prompt);
+            var (reply, notes) = await GenerateAsync(channel, prompt);
             if (reply is null)
             {
-                _agentLog.Log(AgentEventKind.Decision, $"glanced ({mode}, focus {focus:F2}) — decided to stay quiet", detail: notes);
-                LogConsole($"glanced ({mode}, focus {focus:F2}) — decided to stay quiet");
+                _agentLog.Log(channel, AgentEventKind.Decision, $"glanced ({mode}, focus {focus:F2}) — decided to stay quiet", detail: notes);
+                LogConsole($"[{channel}] glanced ({mode}, focus {focus:F2}) — decided to stay quiet");
                 return;
             }
 
-            // Actually engaging — this is the "really focused" moment, so advance the bookmark
-            // and refresh focus before sending.
-            lock (_glanceLock) { _lastFocusedAt = DateTime.UtcNow; }
+            // Actually engaging — this is the "really focused" moment, so advance this channel's
+            // bookmark, make it the conversation, and refresh focus before sending.
+            lock (_glanceLock)
+            {
+                state.LastFocusedAt = DateTime.UtcNow;
+                _conversationChannel = channel;
+            }
             _attention.Engaged();
 
             // Stamp the decision just before the reply lands, then link it to the message it
             // produced so the timeline can attach the reasoning to the chat line.
             var decidedAt = DateTime.UtcNow;
-            int messageId = _send is not null ? await _send(reply) : 0;
-            _agentLog.Log(AgentEventKind.Decision, $"replied ({mode}, focus {focus:F2})",
+            int messageId = _send is not null ? await _send(channel, reply) : 0;
+            _agentLog.Log(channel, AgentEventKind.Decision, $"replied ({mode}, focus {focus:F2})",
                 detail: string.IsNullOrWhiteSpace(notes) ? reply : notes, messageId: messageId > 0 ? messageId : null, at: decidedAt);
-            LogConsole($"glanced ({mode}, focus {focus:F2}) — replied: \"{reply}\"");
+            LogConsole($"[{channel}] glanced ({mode}, focus {focus:F2}) — replied: \"{reply}\"");
         }
         catch (Exception ex)
         {
-            _agentLog.Log(AgentEventKind.Error, ex.Message, detail: ex.ToString());
+            _agentLog.Log(channel, AgentEventKind.Error, ex.Message, detail: ex.ToString());
             _logger.LogError(ex, "Agent error");
         }
     }
@@ -305,7 +358,7 @@ public class ChatAgent
     /// Asks the model what to do. Reply is the line to send, or null to stay quiet; Notes is its
     /// scratchpad (or the raw output, if that didn't parse) for the decision log.
     /// </summary>
-    private async Task<(string? Reply, string? Notes)> GenerateAsync(string prompt)
+    private async Task<(string? Reply, string? Notes)> GenerateAsync(string channel, string prompt)
     {
         await _modelLock.WaitAsync();
         try
@@ -324,7 +377,7 @@ public class ChatAgent
                 if (string.IsNullOrWhiteSpace(thought.Text))
                     continue;
                 // Summary is a short preview; the full thought goes in Detail (expandable in the UI).
-                _agentLog.Log(AgentEventKind.Thinking, FirstLine(thought.Text), detail: thought.Text);
+                _agentLog.Log(channel, AgentEventKind.Thinking, FirstLine(thought.Text), detail: thought.Text);
                 if (_options.LogReasoning)
                     _logger.LogInformation("[THINKING] {ThoughtText}", thought.Text);
             }
@@ -359,10 +412,10 @@ public class ChatAgent
         }
     }
 
-    private void LogDecision(string message)
+    private void LogDecision(string channel, string message)
     {
-        _agentLog.Log(AgentEventKind.Decision, message);
-        LogConsole(message);
+        _agentLog.Log(channel, AgentEventKind.Decision, message);
+        LogConsole($"[{channel}] {message}");
     }
 
     private void LogConsole(string message)

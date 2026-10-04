@@ -117,6 +117,73 @@ body {
     overflow-wrap: anywhere;
 }
 
+/* A channel entry: its link, plus a leave button while the bot is in it */
+.sidebar-nav .nav-channel {
+    display: flex;
+    align-items: stretch;
+}
+
+.sidebar-nav .nav-channel a {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+/* A channel the bot has a log of but is not in */
+.sidebar-nav a.parted {
+    font-style: italic;
+    opacity: 0.6;
+}
+
+.sidebar-nav .nav-leave {
+    flex: 0 0 auto;
+    padding: 0 0.75rem;
+    background: none;
+    border: 0;
+    color: var(--text-muted);
+    font-size: 1rem;
+    cursor: pointer;
+}
+
+.sidebar-nav .nav-leave:hover {
+    color: var(--red);
+}
+
+.sidebar-nav .nav-join {
+    display: flex;
+    gap: 0.4rem;
+    padding: 0.5rem 1rem 0.25rem 1.5rem;
+}
+
+.sidebar-nav .nav-join input,
+.sidebar-nav .nav-join button {
+    padding: 0.25rem 0.45rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font: inherit;
+    font-size: 0.8rem;
+}
+
+.sidebar-nav .nav-join input {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.sidebar-nav .nav-join button {
+    cursor: pointer;
+}
+
+.sidebar-nav .nav-join button:hover {
+    border-color: var(--accent);
+}
+
+.sidebar-nav .nav-join-error {
+    padding: 0 1rem 0 1.5rem;
+    color: var(--red);
+    font-size: 0.75rem;
+}
+
 .sidebar-nav .nav-icon {
     font-size: 1rem;
     width: 1.25rem;

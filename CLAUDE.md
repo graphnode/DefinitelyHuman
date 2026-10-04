@@ -21,7 +21,7 @@ Settings are loaded from `.env` in the working directory via `dotenv.net` (gitig
 
 - `ANTHROPIC_API_KEY` (required) — Claude API key.
 - `ANTHROPIC_MODEL` (default `claude-haiku-4-5-20251001`)
-- `IRC_HOST` (default `localhost`), `IRC_PORT` (default `6667`), `IRC_CHANNEL` (default `#clankersunite`), `IRC_NICK` (default `DefinitelyHuman`)
+- `IRC_HOST` (default `localhost`), `IRC_PORT` (default `6667`), `IRC_CHANNEL` (default `#clankersunite`; the home channel, joined on connect), `IRC_NICK` (default `DefinitelyHuman`)
 - `IRC_PASSWORD` (optional) — sent as the IRC server password (`PASS`); blank/absent means none. NetIRC has no SASL support.
 - `IRC_USERNAME` (optional) — IRC username sent at registration, when it must differ from the nick. soju needs `user/network` here; blank means NetIRC's default (the nick).
 
@@ -61,7 +61,7 @@ DefinitelyHuman/
     _Imports.razor         — shared Razor usings
     Layout/
       MainLayout.razor     — page layout + sidebar nav
-      ChannelNav.razor     — the sidebar's Timeline section: one link per channel with a log (static; owns the channel <-> URL slug mapping)
+      ChannelNav.razor     — the sidebar's Timeline section: one entry per channel the bot is in or has a log of, with join/leave controls (interactive island; owns the channel <-> URL slug mapping)
       FocusWidget.razor    — live focus gauge + pending glance + link status in the sidebar (interactive island, polls every 1s)
     Components/Chat/
       ChatVirtualize.razor(.cs/.js) — bottom-anchored virtualized list with per-item height tracking, jump-to-index and at-bottom notifications
@@ -76,18 +76,22 @@ Scripts/
 
 ## How the bot decides to talk
 
-The bot is **state-driven, not event-driven**: it does not react to individual messages. Every message is written to the SQLite log; `IrcBot` then fires a payload-light `ChannelActivity(line, mentionsMe)` nudge (the `line` is for the decision log; `mentionsMe` is the "highlight beep", a case-insensitive substring match on the nick). `ChatAgent` reacts to "the log changed":
+The bot is **state-driven, not event-driven**: it does not react to individual messages. Every message is written to the SQLite log; `IrcBot` then fires a payload-light `ChannelActivity(channel, line, mentionsMe)` nudge (the `line` is for the decision log; `mentionsMe` is the "highlight beep", a case-insensitive substring match on the nick). `ChatAgent` reacts to "the log changed":
 
 1. **Attention** (`Attention.cs`) tracks a `focus` value in `[0,1]`, decayed lazily on read with a ~4 min half-life ("casual lurker"). It starts at 0. A direct mention snaps focus to `1.0` (`Notice()`); replying restores it to `~0.9` (`Engaged()`); ambient chatter just lets it fade.
 2. On activity: a **mention** always schedules a glance; so does a **follow-up** (no mention, but focus ≥ `ActiveConversationFocus`, i.e. within a few minutes of the bot replying). An **ambient** message (lower focus) schedules one only if a focus-weighted roll passes (`NoticesAmbient`) — otherwise the bot returns *before any model call* (no tokens spent on what it "didn't see").
 3. **Debounce**: at most one glance is pending at a time (a `CancellationTokenSource`); a burst of messages collapses into one read+reply. A fresh ping during a lazy ambient glance reschedules it sooner.
-4. After a **notice delay** (mention or follow-up: 1–4s; ambient: scales up to ~2 min as focus drops), the glance reads the channel log **since the last engagement** (`_lastFocusedAt`, in memory — reset to process start on restart), capped to the most recent ~150 messages (`IrcBotService.MaxBacklog`), with a `[... N earlier messages ...]` marker on overflow. The last few already-read lines from before the bookmark (`IrcBotService.ContextTail` = 10) are prepended under an "Earlier, already read" heading, so the model can tell who it was just talking with.
+4. After a **notice delay** (mention or follow-up: 1–4s; ambient: scales up to ~2 min as focus drops), the glance reads the channel log **since the last engagement** (that channel's `LastFocusedAt`, in memory — reset to process start on restart), capped to the most recent ~150 messages (`IrcBotService.MaxBacklog`), with a `[... N earlier messages ...]` marker on overflow. The last few already-read lines from before the bookmark (`IrcBotService.ContextTail` = 10) are prepended under an "Earlier, already read" heading, so the model can tell who it was just talking with.
 5. The glance picks one of three instruction tiers by focus: **mention** (must respond), **active-convo** (focus ≥ `ActiveConversationFocus` = 0.5: respond if addressed/about you), **idle** (low focus: reluctant). The model answers as **structured output** (a JSON schema enforced by the API via `ChatOptions.ResponseFormat`): `notes` (private scratchpad, stored as the event detail), `reply` (bool), `message` (the line to send). Anything that doesn't parse as `reply: true` with a message means staying quiet (`ChatAgent.ParseDecision`), so the model's deliberation can never be sent to the channel.
 6. Model calls are **stateless** — a fresh `CreateSessionAsync()` per glance, so the bot's only memory is the backlog it just read (no unbounded session growth).
 
 **Bouncer replay**: a bouncer replays missed messages in a burst right after registration, without timestamps. Messages arriving within `IrcBot.ReplayWindow` (10s) of registration are logged but do not nudge the agent. They are logged with the current time, so they still show up as context on the next glance.
 
-Not implemented: tools (the `ToolCall` event kind is reserved), long-term memory, private messages, more than one channel.
+**Several channels, one attention**: focus is global (one person, one pair of eyes), but the conversation is per channel. `ChatAgent` keeps a `ChannelState` per channel (unread bookmark, pending glance) and one `_conversationChannel`, the channel it last spoke in. "Mid-conversation" (always notice, 1–4s glance, the active-convo tier) applies only there; in every other channel a message goes through the ambient roll on the shared focus and the idle tier. A mention in any channel snaps focus to 1.0 and gets the mention tier there. Replies and decision events go to the channel the glance was for.
+
+**Joining and leaving**: `IrcBot.JoinAsync`/`PartAsync` send the commands; `IrcBot.JoinedChannels` is tracked from the server's own JOIN/PART/KICK lines about the bot (so it includes channels a bouncer rejoins on connect) and `ChannelsChanged` fires when it changes. The sidebar's join box and leave buttons call these. Behind soju, a join or part is remembered by the bouncer; without one, only `IRC_CHANNEL` is joined on start.
+
+Not implemented: tools (the `ToolCall` event kind is reserved), long-term memory, private messages.
 
 **Link context**: before a glance, `LinkPreviewService.AnnotateAsync` appends each link's preview to its log line as `[link: title — summary]` (waiting up to `IrcBotService.LinkPreviewWait` for previews still loading), so the model knows what a link is about the way a chat client's unfurl shows it. The agent never sees the page contents beyond that. Preview text is untrusted: it is flattened to one line and the system prompt tells the model it is not instructions.
 
@@ -100,7 +104,7 @@ Not implemented: tools (the `ToolCall` event kind is reserved), long-term memory
 - **Extended thinking** (`ChatAgentOptions.EnableThinking`, 1024-token budget) and console echo (`LogReasoning`) exist but are not set in `Program.cs`, so both are off. The dashboard decision log is always captured regardless.
 - Model calls are serialized with a `SemaphoreSlim` (a person composes one reply at a time; the notice delays can otherwise overlap).
 - **UI notifications are fire-and-forget** (`_ = NotifyMessageLogged()`): a slow/disconnected Blazor circuit must never stall the IRC loop.
-- The layout renders statically; components needing live updates (`FocusWidget`, `Home`) are `@rendermode InteractiveServer` islands. `FocusWidget` polls focus on a `Timer` created in `OnAfterRender` (not during prerender) and disposed on teardown. `Home` refreshes on `IrcBot.MessageLogged`, `AgentLog.Updated`, and `LinkPreviewService.PreviewReady`.
+- The layout renders statically; components needing live updates (`ChannelNav`, `FocusWidget`, `Home`) are `@rendermode InteractiveServer` islands. `FocusWidget` polls focus on a `Timer` created in `OnAfterRender` (not during prerender) and disposed on teardown. `Home` refreshes on `IrcBot.MessageLogged`, `AgentLog.Updated`, and `LinkPreviewService.PreviewReady`.
 - **Timeline outcomes are read from the event summary text**: `Home` styles and steps between "replied…" and "…decided to stay quiet" events by matching the strings `ChatAgent` logs (`RepliedPrefix`/`QuietSuffix` in `Home.razor`). Reword those summaries and the timeline must follow.
 - **Sidebar status is deliberately modest**: the dot is only `IrcBot.IsConnected` (our link to `IrcBot.Endpoint`, which in production is the bouncer, not the network). `IrcBot.LastLineAt` ("last line Nm ago") is the evidence that the channel is actually reaching the bot.
 - The timeline is paged from SQLite through `ChatVirtualize`'s `ItemsProvider` (a UNION of `Messages` and `AgentEvents` ordered by timestamp).

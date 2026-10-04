@@ -1,35 +1,107 @@
+@rendermode InteractiveServer
 @using DefinitelyHuman.Data
 @using DefinitelyHuman.Irc
 @inject IrcBot Bot
 @inject NavigationManager Nav
+@implements IDisposable
 
-@* The Timeline section of the sidebar: one entry per channel that has a log. Rendered
-   statically with the layout, so the list and the active entry refresh on each navigation. *@
+@* The Timeline section of the sidebar: one entry per channel the bot is in or has a log of,
+   with controls to join and leave. An interactive island, so the list follows the bot live. *@
 <div class="nav-group" id="nav-timeline">Timeline</div>
 <div role="group" aria-labelledby="nav-timeline">
     @foreach (var channel in _channels)
     {
-        bool active = channel == _current;
-        <a class="nav-sub @(active ? "active" : null)" href="c/@Slug(channel)" aria-current="@(active ? "page" : null)">@channel</a>
+        bool active = string.Equals(channel, _current, StringComparison.OrdinalIgnoreCase);
+        bool joined = _joined.Contains(channel);
+        <div class="nav-channel">
+            <a class="nav-sub @(active ? "active" : null) @(joined ? null : "parted")" href="c/@Slug(channel)"
+               aria-current="@(active ? "page" : null)" title="@(joined ? null : "The bot is not in this channel; this is its log")">@channel</a>
+            @if (joined)
+            {
+                <button type="button" class="nav-leave" title="Leave @channel" aria-label="Leave @channel"
+                        @onclick="() => Leave(channel)">&times;</button>
+            }
+        </div>
     }
 </div>
+<form class="nav-join" @onsubmit="Join">
+    <input @bind="_newChannel" placeholder="#channel" aria-label="Channel to join" maxlength="50" />
+    <button type="submit">Join</button>
+</form>
+@if (_error is not null)
+{
+    <div class="nav-join-error" role="alert">@_error</div>
+}
 
 @code {
     private List<string> _channels = [];
+    private HashSet<string> _joined = new(StringComparer.OrdinalIgnoreCase);
     private string? _current;
+    private string _newChannel = "";
+    private string? _error;
 
     protected override void OnInitialized()
     {
-        // The bot's own channel first, even before it has logged a line; then any others with a log.
+        Load();
+        Bot.ChannelsChanged += OnChannelsChanged;
+        Nav.LocationChanged += OnLocationChanged;
+    }
+
+    private void Load()
+    {
+        _joined = new HashSet<string>(Bot.JoinedChannels, StringComparer.OrdinalIgnoreCase);
+
+        // The bot's home channel first; then every other channel it is in or has a log of.
         using var db = new ChattingContext();
-        _channels = [Bot.Channel, .. db.Messages.Select(m => m.Channel).Distinct().ToList()
-            .Where(c => c != Bot.Channel).Order(StringComparer.OrdinalIgnoreCase)];
+        var logged = db.Messages.Select(m => m.Channel).Distinct().ToList();
+        _channels = [Bot.Channel, .. _joined.Concat(logged)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Where(c => !c.Equals(Bot.Channel, StringComparison.OrdinalIgnoreCase))
+            .Order(StringComparer.OrdinalIgnoreCase)];
 
         string path = Nav.ToBaseRelativePath(Nav.Uri).Split('?', '#')[0];
         _current = path.Length == 0 ? Bot.Channel
             : path.StartsWith("c/", StringComparison.Ordinal) ? FromSlug(Uri.UnescapeDataString(path[2..]))
             : null;
     }
+
+    private void Refresh() => _ = InvokeAsync(() =>
+    {
+        Load();
+        StateHasChanged();
+    });
+
+    private void OnChannelsChanged() => Refresh();
+    private void OnLocationChanged(object? sender, LocationChangedEventArgs e) => Refresh();
+
+    private async Task Join()
+    {
+        _error = null;
+        string name = _newChannel.Trim();
+        if (name.Length == 0)
+            return;
+
+        if (!"#&".Contains(name[0]))
+            name = "#" + name;
+
+        if (name.Length < 2 || name.Length > 50 || name.Any(c => c is ' ' or ',' or ':' || char.IsControl(c)))
+        {
+            _error = "That is not a valid channel name.";
+            return;
+        }
+
+        if (!Bot.IsConnected)
+        {
+            _error = "Not connected, so the bot can't join.";
+            return;
+        }
+
+        // The entry appears when the server confirms the join (ChannelsChanged).
+        await Bot.JoinAsync(name);
+        _newChannel = "";
+    }
+
+    private Task Leave(string channel) => Bot.PartAsync(channel);
 
     /// <summary>
     /// A channel's URL segment: "#name" drops its "#" for a clean URL ("c/name"); anything else
@@ -41,4 +113,10 @@
     /// <summary>The channel a URL segment names (already URL-decoded).</summary>
     public static string FromSlug(string slug) =>
         slug.Length > 0 && "#&+!".Contains(slug[0]) ? slug : "#" + slug;
+
+    public void Dispose()
+    {
+        Bot.ChannelsChanged -= OnChannelsChanged;
+        Nav.LocationChanged -= OnLocationChanged;
+    }
 }
