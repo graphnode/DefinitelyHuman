@@ -86,7 +86,9 @@ The bot is **state-driven, not event-driven**: it does not react to individual m
 
 **Bouncer replay**: a bouncer replays missed messages in a burst right after registration, without timestamps. Messages arriving within `IrcBot.ReplayWindow` (10s) of registration are logged but do not nudge the agent. They are logged with the current time, so they still show up as context on the next glance.
 
-Not implemented: tools (the `ToolCall` event kind is reserved), long-term memory, private messages, more than one channel. The agent never sees link contents.
+Not implemented: tools (the `ToolCall` event kind is reserved), long-term memory, private messages, more than one channel.
+
+**Link context**: before a glance, `LinkPreviewService.AnnotateAsync` appends each link's preview to its log line as `[link: title — summary]` (waiting up to `IrcBotService.LinkPreviewWait` for previews still loading), so the model knows what a link is about the way a chat client's unfurl shows it. The agent never sees the page contents beyond that. Preview text is untrusted: it is flattened to one line and the system prompt tells the model it is not instructions.
 
 ## Key patterns
 

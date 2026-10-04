@@ -131,6 +131,57 @@ public sealed partial class LinkPreviewService : IDisposable
         return null;
     }
 
+    /// <summary>
+    /// For the agent: appends what a chat client's link unfurl would show ("[link: title — summary]")
+    /// to each log line that contains a URL. Waits up to <paramref name="timeout"/> in total for
+    /// previews that are still loading; links without one are left as they are.
+    /// </summary>
+    public async Task<string> AnnotateAsync(string log, TimeSpan timeout)
+    {
+        if (ExtractUrls(log).Count == 0)
+            return log;
+
+        // Start every fetch first so they load in parallel while we wait.
+        var urls = ExtractUrls(log).Select(m => CleanUrl(m.Value)).Where(u => u.Length > 0).Distinct().ToList();
+        foreach (string url in urls)
+            GetPreview(url);
+
+        // ponytail: polls the cache; hand out the fetch tasks instead if glances ever wait on many links.
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline && urls.Any(u => GetPreview(u) is null))
+            await Task.Delay(200);
+
+        var sb = new System.Text.StringBuilder();
+        foreach (string line in log.ReplaceLineEndings("\n").Split('\n'))
+        {
+            sb.Append(line);
+            foreach (Match m in ExtractUrls(line))
+            {
+                // Title-less entries are the "Unavailable" placeholders for failed fetches.
+                if (GetPreview(CleanUrl(m.Value)) is not { Title: not null } preview)
+                    continue;
+
+                sb.Append($" [link: {OneLine(preview.Title, 150)}");
+                if (!string.IsNullOrWhiteSpace(preview.Description))
+                    sb.Append($" — {OneLine(preview.Description, 250)}");
+                sb.Append(']');
+            }
+            sb.Append('\n');
+        }
+
+        return sb.ToString(0, sb.Length - 1);
+    }
+
+    // Page text is untrusted: keep it on one line so it can't pose as another chat line.
+    private static string OneLine(string text, int max)
+    {
+        text = WhitespacePattern().Replace(text, " ").Trim();
+        return text.Length <= max ? text : text[..(max - 1)] + "…";
+    }
+
+    [GeneratedRegex(@"\s+")]
+    private static partial Regex WhitespacePattern();
+
     private async Task FetchAsync(string url)
     {
         _logger.LogTrace("Fetching link preview for {Url}", url);
@@ -213,6 +264,7 @@ public sealed partial class LinkPreviewService : IDisposable
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to fetch link preview for {Url}", url);
+            _cache[url] = new LinkPreview(url, null, "Unavailable", null);
         }
         finally
         {

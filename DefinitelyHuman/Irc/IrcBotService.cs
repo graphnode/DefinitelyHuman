@@ -1,9 +1,13 @@
 using DefinitelyHuman.Agent;
+using DefinitelyHuman.Utilities;
 
 namespace DefinitelyHuman.Irc;
 
-public class IrcBotService(IrcBot bot, ChatAgent agent) : BackgroundService
+public class IrcBotService(IrcBot bot, ChatAgent agent, LinkPreviewService previews) : BackgroundService
 {
+    // How long a glance waits for the previews of links it hasn't seen yet.
+    private static readonly TimeSpan LinkPreviewWait = TimeSpan.FromSeconds(5);
+
     // How many recent messages a single glance reads at most (older overflow is summarized).
     private const int MaxBacklog = 150;
 
@@ -15,7 +19,8 @@ public class IrcBotService(IrcBot bot, ChatAgent agent) : BackgroundService
     {
         // Wire the agent's I/O: read the log since it was last involved and speak to the channel.
         agent.Bind(
-            readLog: since => bot.ReadLogSinceAsync(since, MaxBacklog, ContextTail),
+            readLog: async since => await previews.AnnotateAsync(
+                await bot.ReadLogSinceAsync(since, MaxBacklog, ContextTail), LinkPreviewWait),
             send: bot.SendMessageAsync);
 
         // The bot doesn't get handed messages — just a nudge that the log changed (plus the
