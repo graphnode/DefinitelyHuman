@@ -2,6 +2,7 @@ using System.Text;
 using DefinitelyHuman.Data;
 using Microsoft.EntityFrameworkCore;
 using NetIRC;
+using NetIRC.Connection;
 using NetIRC.Messages;
 
 namespace DefinitelyHuman.Irc;
@@ -33,11 +34,12 @@ public class IrcBot : IDisposable
         _options = options;
         _logger = logger;
         
-        var builder = Client.CreateBuilder()
-            .WithNick(options.Nick, options.RealName)
-            .WithServer(options.Host, options.Port, options.Password);
+        // Built by hand (same constructor the NetIRC builder uses) so the connection can be wrapped.
+        IConnection connection = new TcpClientConnection(options.Host, options.Port);
+        if (options.Username is not null)
+            connection = new UsernameConnection(connection, options.Username);
 
-        _client = builder.Build();
+        _client = new Client(new User(options.Nick, options.RealName), options.Password, connection);
         
         _client.RegistrationCompleted += async (sender, _) =>
         {

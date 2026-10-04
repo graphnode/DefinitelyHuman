@@ -120,11 +120,11 @@ public sealed partial class LinkPreviewService : IDisposable
         if (_cache.TryGetValue(url, out var preview))
         {
             if (preview is not null)
-                _logger.LogDebug("Cache hit for {Url}", url);
+                _logger.LogTrace("Cache hit for {Url}", url);
             return preview;
         }
 
-        _logger.LogDebug("Cache miss for {Url}, scheduling fetch", url);
+        _logger.LogTrace("Cache miss for {Url}, scheduling fetch", url);
         _cache.TryAdd(url, null);
         _ = FetchAsync(url);
         return null;
@@ -132,7 +132,7 @@ public sealed partial class LinkPreviewService : IDisposable
 
     private async Task FetchAsync(string url)
     {
-        _logger.LogDebug("Fetching link preview for {Url}", url);
+        _logger.LogTrace("Fetching link preview for {Url}", url);
 
         await _concurrency.WaitAsync();
         try
@@ -143,7 +143,8 @@ public sealed partial class LinkPreviewService : IDisposable
             using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogDebug("Preview fetch failed for {Url}: {StatusCode}", url, response.StatusCode);
+                _logger.LogTrace("Preview skipped for {Url}: {StatusCode}", url, response.StatusCode);
+                _cache[url] = new LinkPreview(url, null, "Unavailable", null);
                 return;
             }
 
@@ -161,7 +162,8 @@ public sealed partial class LinkPreviewService : IDisposable
 
             if (!contentType.Contains("html", StringComparison.OrdinalIgnoreCase))
             {
-                _logger.LogDebug("Preview skipped for {Url}: content-type {ContentType}", url, contentType);
+                _logger.LogTrace("Preview skipped for {Url}: content-type {ContentType}", url, contentType);
+                _cache[url] = new LinkPreview(url, null, "Unavailable", null);
                 return;
             }
 
@@ -181,7 +183,8 @@ public sealed partial class LinkPreviewService : IDisposable
 
             if (og.Title is null && og.ImageUrl is null)
             {
-                _logger.LogWarning("Preview skipped for {Url}: no OG data", url);
+                _logger.LogTrace("Preview skipped for {Url}: no OG data", url);
+                _cache[url] = new LinkPreview(url, null, "Unavailable", null);
                 return;
             }
 

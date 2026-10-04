@@ -16,7 +16,8 @@ var ircBotOptions = new IrcBotOptions
     Host = Environment.GetEnvironmentVariable("IRC_HOST") ?? "localhost",
     Port = int.TryParse(Environment.GetEnvironmentVariable("IRC_PORT"), out int port) ? port : 6667,
     Channel = Environment.GetEnvironmentVariable("IRC_CHANNEL") ?? "#clankersunite",
-    Password = Environment.GetEnvironmentVariable("IRC_PASSWORD")
+    Password = Environment.GetEnvironmentVariable("IRC_PASSWORD"),
+    Username = Environment.GetEnvironmentVariable("IRC_USERNAME")
 };
 
 var chatAgentOptions = new ChatAgentOptions

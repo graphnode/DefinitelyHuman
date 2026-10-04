@@ -21,4 +21,11 @@ public struct IrcBotOptions
         get => field;
         set => field = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
+
+    /// <summary>IRC username sent at registration; blank means NetIRC's default (the nick).</summary>
+    public string? Username
+    {
+        get => field;
+        set => field = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
 }

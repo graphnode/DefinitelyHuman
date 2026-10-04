@@ -231,7 +231,7 @@ public class ChatAgent
                     + "genuinely deserves a remark from you, otherwise reply with [SILENT].";
             }
 
-            string prompt = $"{instruction}\n\nChannel log since you last joined in:\n{backlog}";
+            var prompt = $"{instruction}\n\nChannel log since you last joined in:\n{backlog}";
 
             string? reply = await GenerateAsync(prompt);
             if (string.IsNullOrEmpty(reply) || reply.Contains("[SILENT]"))
