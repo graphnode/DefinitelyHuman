@@ -1,6 +1,7 @@
 #!/usr/bin/env dotnet run
 #:package Microsoft.Data.Sqlite@10.0.8
 
+using System.Globalization;
 using System.IO.Compression;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -125,7 +126,9 @@ foreach (var entry in entries)
         && string.Equals(nick, botNick, StringComparison.OrdinalIgnoreCase);
 
     pChannel.Value = channel;
-    pTimestamp.Value = entry.ServerTime.ToString("o");
+    // Same text format EF Core writes for the bot's own rows (UTC, space-separated, no "Z"), so
+    // imported and live timestamps sort and compare correctly against each other as strings.
+    pTimestamp.Value = entry.ServerTime.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss.FFFFFFF", CultureInfo.InvariantCulture);
     pNick.Value = nick;
     pText.Value = text;
     pIsOwn.Value = isOwn ? 1 : 0;
