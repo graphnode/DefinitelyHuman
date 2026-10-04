@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Anthropic;
 using Anthropic.Models.Messages;
 using DefinitelyHuman.Data;
@@ -19,7 +20,26 @@ public class ChatAgent
     private readonly AgentLog _agentLog;
     private readonly ILogger<ChatAgent> _logger;
     private readonly AIAgent _agent;
-    private readonly ChatOptions? _thinkingOptions;
+    private readonly ChatOptions _chatOptions;
+
+    // The model answers with this shape (API-enforced structured output), so its deliberation
+    // can never leak into the channel. "notes" comes first: it thinks before it commits.
+    private sealed record GlanceDecision(string Notes, bool Reply, string Message);
+
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    private static readonly JsonElement DecisionSchema = JsonDocument.Parse("""
+        {
+          "type": "object",
+          "properties": {
+            "notes": { "type": "string", "description": "Private scratchpad: who the new messages are for and whether to answer. Never shown to anyone." },
+            "reply": { "type": "boolean", "description": "true to send a message to the channel, false to stay quiet." },
+            "message": { "type": "string", "description": "The exact line to send, nothing else. Empty when reply is false." }
+          },
+          "required": ["notes", "reply", "message"],
+          "additionalProperties": false
+        }
+        """).RootElement.Clone();
 
     // A human's wandering attention to the channel. Replaces the old active-conversation
     // window and chime-in throttle: replying keeps focus high, and focus fading is what
@@ -84,24 +104,26 @@ public class ChatAgent
                 - The earlier lines are only there so you can tell who was talking to whom. Don't reply to them again.
                 - Lines from you appear as "<{options.Nick}> ...". A "[... N earlier messages ...]" marker means you skimmed past older history.
                 - Respond to the current state of the conversation, not necessarily the last line.
-                - When you decide NOT to respond, reply with exactly: [SILENT]
+                - Your answer is a JSON object. Do any thinking in "notes" (nobody sees it). To stay quiet, set "reply" to false. To speak, set "reply" to true and put only the line you would type into IRC in "message".
                 """
         );
 
+        _chatOptions = new ChatOptions
+        {
+            ResponseFormat = ChatResponseFormat.ForJsonSchema(DecisionSchema, "glance_decision"),
+        };
+
         if (options.EnableThinking)
         {
-            _thinkingOptions = new ChatOptions
+            // budget_tokens must be >= 1024 and < max_tokens, and thinking tokens count
+            // toward max_tokens — so keep max comfortably above the budget.
+            _chatOptions.MaxOutputTokens = 2048;
+            _chatOptions.RawRepresentationFactory = _ => new MessageCreateParams
             {
-                // budget_tokens must be >= 1024 and < max_tokens, and thinking tokens count
-                // toward max_tokens — so keep max comfortably above the budget.
-                MaxOutputTokens = 2048,
-                RawRepresentationFactory = _ => new MessageCreateParams
-                {
-                    MaxTokens = 2048,
-                    Messages = [],   // overwritten by the adapter with the real conversation
-                    Model = options.Model,   // overwritten by the adapter; set for safety
-                    Thinking = new ThinkingConfigEnabled { BudgetTokens = 1024 },
-                },
+                MaxTokens = 2048,
+                Messages = [],   // overwritten by the adapter with the real conversation
+                Model = options.Model,   // overwritten by the adapter; set for safety
+                Thinking = new ThinkingConfigEnabled { BudgetTokens = 1024 },
             };
         }
     }
@@ -229,23 +251,22 @@ public class ChatAgent
                     + "talking with who carries on, answers your question, or reacts to what you said is talking "
                     + "to you. Someone else addressing another person, or carrying on a separate thread, is not. "
                     + "When a message is for you or about you, answer like a normal person mid-conversation "
-                    + "would — going quiet on someone who's talking to you reads as rude or robotic. Reply with "
-                    + "[SILENT] only if the new messages are clearly not meant for you.";
+                    + "would — going quiet on someone who's talking to you reads as rude or robotic. Stay "
+                    + "quiet only if the new messages are clearly not meant for you.";
             }
             else
             {
                 mode = "idle";
                 instruction = "You glanced at the channel after being away. Reply only if something "
-                    + "genuinely deserves a remark from you, otherwise reply with [SILENT].";
+                    + "genuinely deserves a remark from you, otherwise stay quiet.";
             }
 
             var prompt = $"{instruction}\n\nChannel log:\n{backlog}";
 
-            string? reply = await GenerateAsync(prompt);
-            if (string.IsNullOrEmpty(reply) || reply.Contains("[SILENT]"))
+            var (reply, notes) = await GenerateAsync(prompt);
+            if (reply is null)
             {
-                // Keep the raw output: a reply that merely contains [SILENT] is dropped too, and this shows it.
-                _agentLog.Log(AgentEventKind.Decision, $"glanced ({mode}, focus {focus:F2}) — decided to stay quiet", detail: reply);
+                _agentLog.Log(AgentEventKind.Decision, $"glanced ({mode}, focus {focus:F2}) — decided to stay quiet", detail: notes);
                 LogConsole($"glanced ({mode}, focus {focus:F2}) — decided to stay quiet");
                 return;
             }
@@ -260,7 +281,7 @@ public class ChatAgent
             var decidedAt = DateTime.UtcNow;
             int messageId = _send is not null ? await _send(reply) : 0;
             _agentLog.Log(AgentEventKind.Decision, $"replied ({mode}, focus {focus:F2})",
-                detail: reply, messageId: messageId > 0 ? messageId : null, at: decidedAt);
+                detail: string.IsNullOrWhiteSpace(notes) ? reply : notes, messageId: messageId > 0 ? messageId : null, at: decidedAt);
             LogConsole($"glanced ({mode}, focus {focus:F2}) — replied: \"{reply}\"");
         }
         catch (Exception ex)
@@ -270,7 +291,11 @@ public class ChatAgent
         }
     }
 
-    private async Task<string?> GenerateAsync(string prompt)
+    /// <summary>
+    /// Asks the model what to do. Reply is the line to send, or null to stay quiet; Notes is its
+    /// scratchpad (or the raw output, if that didn't parse) for the decision log.
+    /// </summary>
+    private async Task<(string? Reply, string? Notes)> GenerateAsync(string prompt)
     {
         await _modelLock.WaitAsync();
         try
@@ -279,9 +304,7 @@ public class ChatAgent
             // it just read from the log — no unbounded session growth across the bot's lifetime.
             var session = await _agent.CreateSessionAsync();
 
-            var response = _thinkingOptions is not null
-                ? await _agent.RunAsync(prompt, session, new ChatClientAgentRunOptions(_thinkingOptions))
-                : await _agent.RunAsync(prompt, session);
+            var response = await _agent.RunAsync(prompt, session, new ChatClientAgentRunOptions(_chatOptions));
 
             // Extended-thinking blocks arrive as TextReasoningContent, separate from the reply.
             foreach (var thought in response.Messages
@@ -296,11 +319,33 @@ public class ChatAgent
                     _logger.LogInformation("[THINKING] {ThoughtText}", thought.Text);
             }
 
-            return response.Text.Trim();
+            return ParseDecision(response.Text);
         }
         finally
         {
             _modelLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Anything that isn't a well-formed "reply: true" with a message means staying quiet. A
+    /// refusal or a truncated response can break the schema; the raw text is kept for the log.
+    /// </summary>
+    internal static (string? Reply, string? Notes) ParseDecision(string raw)
+    {
+        raw = raw.Trim();
+        try
+        {
+            var decision = JsonSerializer.Deserialize<GlanceDecision>(raw, JsonOptions);
+            if (decision is null)
+                return (null, raw);
+
+            string message = decision.Message?.Trim() ?? "";
+            return decision.Reply && message.Length > 0 ? (message, decision.Notes) : (null, decision.Notes);
+        }
+        catch (JsonException)
+        {
+            return (null, raw);
         }
     }
 
