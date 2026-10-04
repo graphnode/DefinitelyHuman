@@ -34,6 +34,18 @@ public class IrcBot : IDisposable
     public string Channel => _options.Channel;
     public string Nick => _options.Nick;
 
+    /// <summary>The host:port this process connects to: the IRC server, or a bouncer in front of it.</summary>
+    public string Endpoint => $"{_options.Host}:{_options.Port}";
+
+    /// <summary>
+    /// Registered with <see cref="Endpoint"/> and not dropped since. Says nothing about a
+    /// bouncer's own connection to the network; <see cref="LastLineAt"/> is the evidence for that.
+    /// </summary>
+    public bool IsConnected { get; private set; }
+
+    /// <summary>When the last channel line from someone else arrived, or null if none has since startup.</summary>
+    public DateTime? LastLineAt { get; private set; }
+
     public IrcBot(IrcBotOptions options, ILogger<IrcBot> logger)
     {
         _options = options;
@@ -41,6 +53,7 @@ public class IrcBot : IDisposable
         
         // Built by hand (same constructor the NetIRC builder uses) so the connection can be wrapped.
         IConnection connection = new TcpClientConnection(options.Host, options.Port);
+        connection.Disconnected += (_, _) => IsConnected = false;
         if (options.Username is not null)
             connection = new UsernameConnection(connection, options.Username);
 
@@ -49,6 +62,7 @@ public class IrcBot : IDisposable
         _client.RegistrationCompleted += async (sender, _) =>
         {
             _registeredAt = DateTime.UtcNow;
+            IsConnected = true;
             if (sender is Client c)
                 await c.SendAsync(new JoinMessage(options.Channel));
         };
@@ -65,6 +79,7 @@ public class IrcBot : IDisposable
                             continue;
 
                         _logger.LogInformation("[{Channel}] <{Nick}> {Text}", ch.Name, msg.User.Nick, msg.Text);
+                        LastLineAt = DateTime.UtcNow;
 
                         // Every message just goes into the log; the agent reads the log when it
                         // glances. We only hand it a nudge: did the channel change, and was it a

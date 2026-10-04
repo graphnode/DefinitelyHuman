@@ -1,24 +1,40 @@
 @rendermode InteractiveServer
+@using System.Globalization
 @using DefinitelyHuman.Agent
+@using DefinitelyHuman.Irc
 @inject ChatAgent Agent
+@inject IrcBot Bot
 @implements IDisposable
 
 <div class="focus-widget">
     <div class="focus-label">
         <span>Focus</span>
-        <span class="focus-value">@_focus.ToString("P0")</span>
+        <span class="focus-value">@_focus.ToString("F2")</span>
     </div>
-    <div class="focus-bar">
+    <div class="focus-bar" role="meter" aria-label="Focus" aria-valuemin="0" aria-valuemax="1"
+         aria-valuenow="@_focus.ToString("F2", CultureInfo.InvariantCulture)" aria-valuetext="@($"{_focus:F2}, {Note}")">
         <div class="focus-bar-fill" style="width:@(Pct)%; background:@BarColor;"></div>
+        @* Above this mark the bot treats the channel as a conversation it is in. *@
+        <div class="focus-bar-mark" style="left:@((int)(ChatAgent.ActiveConversationFocus * 100))%"></div>
     </div>
+    <div class="focus-note">@Note</div>
+</div>
+@* The dot only knows about our own link (to the server, or to a bouncer). Whether the channel
+   is actually reaching us is shown as evidence instead: how long since a line last arrived. *@
+<div class="sidebar-footer">
+    <div><span class="status-dot @(_connected ? "online" : "offline")"></span>@(_connected ? "Linked to" : "No link to") @Bot.Endpoint</div>
+    <div class="status-heard">@Heard</div>
 </div>
 
 @code {
     private double _focus;
+    private DateTime? _nextGlanceAt;
+    private bool _connected;
+    private DateTime? _lastLineAt;
     private Timer? _timer;
 
     // Focus decays continuously, so we poll rather than react to events.
-    protected override void OnInitialized() => _focus = Agent.CurrentFocus;
+    protected override void OnInitialized() => Poll();
 
     protected override void OnAfterRender(bool firstRender)
     {
@@ -31,20 +47,52 @@
         {
             _ = InvokeAsync(() =>
             {
-                _focus = Agent.CurrentFocus;
+                Poll();
                 StateHasChanged();
             });
         }, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+    }
+
+    private void Poll()
+    {
+        _focus = Agent.CurrentFocus;
+        _nextGlanceAt = Agent.NextGlanceAt;
+        _connected = Bot.IsConnected;
+        _lastLineAt = Bot.LastLineAt;
+    }
+
+    private string Heard
+    {
+        get
+        {
+            if (_lastLineAt is not { } at)
+                return "no lines since start";
+
+            var ago = DateTime.UtcNow - at;
+            return ago < TimeSpan.FromMinutes(1) ? "last line just now"
+                : ago < TimeSpan.FromHours(1) ? $"last line {(int)ago.TotalMinutes}m ago"
+                : $"last line {(int)ago.TotalHours}h{ago.Minutes:00}m ago";
+        }
     }
 
     private int Pct => (int)Math.Round(_focus * 100);
 
     private string BarColor => _focus switch
     {
-        >= 0.5 => "var(--green)",   // active-conversation territory
+        >= ChatAgent.ActiveConversationFocus => "var(--green)",   // active-conversation territory
         >= 0.15 => "var(--orange)", // noticing, but fading
         _ => "var(--text-muted)",   // basically not watching
     };
+
+    // What the bar's colour means, in words; a scheduled glance takes over while it is pending.
+    private string Note => _nextGlanceAt is { } at
+        ? $"glancing in {Math.Max(0, (int)Math.Ceiling((at - DateTime.UtcNow).TotalSeconds))}s"
+        : _focus switch
+        {
+            >= ChatAgent.ActiveConversationFocus => "in conversation",
+            >= 0.15 => "fading",
+            _ => "not watching",
+        };
 
     public void Dispose() => _timer?.Dispose();
 }

@@ -1,0 +1,44 @@
+@using DefinitelyHuman.Data
+@using DefinitelyHuman.Irc
+@inject IrcBot Bot
+@inject NavigationManager Nav
+
+@* The Timeline section of the sidebar: one entry per channel that has a log. Rendered
+   statically with the layout, so the list and the active entry refresh on each navigation. *@
+<div class="nav-group" id="nav-timeline">Timeline</div>
+<div role="group" aria-labelledby="nav-timeline">
+    @foreach (var channel in _channels)
+    {
+        bool active = channel == _current;
+        <a class="nav-sub @(active ? "active" : null)" href="c/@Slug(channel)" aria-current="@(active ? "page" : null)">@channel</a>
+    }
+</div>
+
+@code {
+    private List<string> _channels = [];
+    private string? _current;
+
+    protected override void OnInitialized()
+    {
+        // The bot's own channel first, even before it has logged a line; then any others with a log.
+        using var db = new ChattingContext();
+        _channels = [Bot.Channel, .. db.Messages.Select(m => m.Channel).Distinct().ToList()
+            .Where(c => c != Bot.Channel).Order(StringComparer.OrdinalIgnoreCase)];
+
+        string path = Nav.ToBaseRelativePath(Nav.Uri).Split('?', '#')[0];
+        _current = path.Length == 0 ? Bot.Channel
+            : path.StartsWith("c/", StringComparison.Ordinal) ? FromSlug(Uri.UnescapeDataString(path[2..]))
+            : null;
+    }
+
+    /// <summary>
+    /// A channel's URL segment: "#name" drops its "#" for a clean URL ("c/name"); anything else
+    /// ("##name", "&amp;name") is kept whole, so <see cref="FromSlug"/> can always tell them apart.
+    /// </summary>
+    public static string Slug(string channel) => Uri.EscapeDataString(
+        channel.Length > 1 && channel[0] == '#' && !"#&+!".Contains(channel[1]) ? channel[1..] : channel);
+
+    /// <summary>The channel a URL segment names (already URL-decoded).</summary>
+    public static string FromSlug(string slug) =>
+        slug.Length > 0 && "#&+!".Contains(slug[0]) ? slug : "#" + slug;
+}

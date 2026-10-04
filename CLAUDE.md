@@ -61,11 +61,12 @@ DefinitelyHuman/
     _Imports.razor         — shared Razor usings
     Layout/
       MainLayout.razor     — page layout + sidebar nav
-      FocusWidget.razor    — live focus gauge in the sidebar (interactive island, polls every 1s)
+      ChannelNav.razor     — the sidebar's Timeline section: one link per channel with a log (static; owns the channel <-> URL slug mapping)
+      FocusWidget.razor    — live focus gauge + pending glance + link status in the sidebar (interactive island, polls every 1s)
     Components/Chat/
-      ChatVirtualize.razor(.cs/.js) — bottom-anchored virtualized list with per-item height tracking
+      ChatVirtualize.razor(.cs/.js) — bottom-anchored virtualized list with per-item height tracking, jump-to-index and at-bottom notifications
     Pages/
-      Home.razor           — the timeline: chat lines and agent events merged by timestamp, with link previews
+      Home.razor           — the timeline of one channel (`/` = the bot's channel, `/c/{slug}` = any logged channel): chat lines and agent events merged by timestamp, with link previews, find and decision stepping
       Error.razor, NotFound.razor
 Scripts/
   ImportHalloyLog.cs       — file-based script: imports a Halloy log export into the chat database
@@ -100,6 +101,8 @@ Not implemented: tools (the `ToolCall` event kind is reserved), long-term memory
 - Model calls are serialized with a `SemaphoreSlim` (a person composes one reply at a time; the notice delays can otherwise overlap).
 - **UI notifications are fire-and-forget** (`_ = NotifyMessageLogged()`): a slow/disconnected Blazor circuit must never stall the IRC loop.
 - The layout renders statically; components needing live updates (`FocusWidget`, `Home`) are `@rendermode InteractiveServer` islands. `FocusWidget` polls focus on a `Timer` created in `OnAfterRender` (not during prerender) and disposed on teardown. `Home` refreshes on `IrcBot.MessageLogged`, `AgentLog.Updated`, and `LinkPreviewService.PreviewReady`.
+- **Timeline outcomes are read from the event summary text**: `Home` styles and steps between "replied…" and "…decided to stay quiet" events by matching the strings `ChatAgent` logs (`RepliedPrefix`/`QuietSuffix` in `Home.razor`). Reword those summaries and the timeline must follow.
+- **Sidebar status is deliberately modest**: the dot is only `IrcBot.IsConnected` (our link to `IrcBot.Endpoint`, which in production is the bouncer, not the network). `IrcBot.LastLineAt` ("last line Nm ago") is the evidence that the channel is actually reaching the bot.
 - The timeline is paged from SQLite through `ChatVirtualize`'s `ItemsProvider` (a UNION of `Messages` and `AgentEvents` ordered by timestamp).
 - Typing delay simulates human speed (4–8 chars/sec + random pause).
 - Replies over 400 chars are discarded (IRC message limit).

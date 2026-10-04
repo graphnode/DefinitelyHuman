@@ -31,6 +31,10 @@ public sealed partial class ChatVirtualize<TItem> : IAsyncDisposable
     [Parameter]
     public int OverscanCount { get; set; } = 200;
 
+    /// <summary>Raised when the user scrolls away from, or back to, the bottom.</summary>
+    [Parameter]
+    public EventCallback<bool> AtBottomChanged { get; set; }
+
     [Inject]
     private IJSRuntime JS { get; set; } = default!;
 
@@ -49,6 +53,10 @@ public sealed partial class ChatVirtualize<TItem> : IAsyncDisposable
     private bool _initialized;
     private int _knownItemCount;
     private bool _pendingScrollToBottom;
+    private int? _pendingScrollIndex;
+
+    // The row last jumped to with ScrollToIndexAsync (-1: none), so stepping continues from it.
+    private int _cursor = -1;
 
     // Provider-mode buffer
     private IReadOnlyList<TItem> _loadedItems = [];
@@ -165,6 +173,12 @@ public sealed partial class ChatVirtualize<TItem> : IAsyncDisposable
                 _pendingScrollToBottom = false;
                 await _jsModule!.InvokeVoidAsync("scrollToBottom", _jsInstanceId);
             }
+
+            if (_pendingScrollIndex is { } index)
+            {
+                _pendingScrollIndex = null;
+                await _jsModule!.InvokeVoidAsync("scrollToIndex", _jsInstanceId, index);
+            }
         }
     }
 
@@ -221,14 +235,53 @@ public sealed partial class ChatVirtualize<TItem> : IAsyncDisposable
         StateHasChanged();
     }
 
+    [JSInvokable]
+    public Task OnAtBottomChanged(bool atBottom) => AtBottomChanged.InvokeAsync(atBottom);
+
     // ------------------------------------------------------------------ Public API
 
     /// <summary>Programmatically scroll to the bottom of the chat.</summary>
     public async Task ScrollToBottomAsync()
     {
-        if (_jsReady)
-            await _jsModule!.InvokeVoidAsync("scrollToBottom", _jsInstanceId);
+        if (!_jsReady) return;
+
+        // Render the newest items first: the scroll position alone only reaches an estimate.
+        _cursor = -1;
+        _itemsBefore = Math.Max(0, TotalItemCount - _visibleItemCapacity);
+        if (ItemsProvider is not null) await LoadDataAsync();
+        _pendingScrollToBottom = true;
+        StateHasChanged();
     }
+
+    /// <summary>Brings the item at <paramref name="index"/> to the middle of the view and flashes it.</summary>
+    public async Task ScrollToIndexAsync(int index)
+    {
+        int total = TotalItemCount;
+        if (!_jsReady || total == 0) return;
+
+        index = Math.Clamp(index, 0, total - 1);
+        _cursor = index;
+
+        // Re-centre the rendered window on the target so it exists in the DOM before we scroll.
+        if (index < _itemsBefore || index >= _itemsBefore + _visibleItemCapacity)
+        {
+            _visibleItemCapacity = Math.Max(_visibleItemCapacity, 1);
+            _itemsBefore = Math.Clamp(index - _visibleItemCapacity / 2, 0, Math.Max(0, total - _visibleItemCapacity));
+            if (ItemsProvider is not null) await LoadDataAsync();
+        }
+
+        _pendingScrollIndex = index;
+        StateHasChanged();
+    }
+
+    /// <summary>
+    /// The index a step in direction <paramref name="dir"/> (-1 earlier, +1 later) should search
+    /// from: the item last jumped to while it is still on screen, otherwise the item just past
+    /// the far edge of the viewport (which may be one outside the valid range).
+    /// </summary>
+    public async Task<int> StepAnchorAsync(int dir) => _jsReady
+        ? await _jsModule!.InvokeAsync<int>("stepAnchor", _jsInstanceId, dir, _cursor)
+        : dir < 0 ? TotalItemCount : -1;
 
     /// <summary>
     /// Re-requests data from the <see cref="ItemsProvider"/>. Call when the underlying

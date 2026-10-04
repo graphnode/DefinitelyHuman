@@ -19,6 +19,14 @@ export function isAtBottom(id) {
     return instances.get(id)?.isAtBottom() ?? true;
 }
 
+export function scrollToIndex(id, index) {
+    instances.get(id)?.scrollToIndex(index);
+}
+
+export function stepAnchor(id, dir, cursor) {
+    return instances.get(id)?.stepAnchor(dir, cursor) ?? 0;
+}
+
 export function dispose(id) {
     instances.get(id)?.dispose();
     instances.delete(id);
@@ -32,6 +40,7 @@ class ChatVirtualizer {
         this._disposed = false;
         this._pendingCallback = null;
         this._observedItems = new Map();
+        this._pinUntil = 0;
 
         this._scrollContainer = findScrollContainer(spacerBefore);
 
@@ -50,6 +59,7 @@ class ChatVirtualizer {
         // after a resize, so reconnect the IO when a spacer height changes.
         this._spacerResizeObserver = new ResizeObserver(() => {
             if (this._disposed) return;
+            this._pinToBottom();
             this._intersectionObserver.unobserve(this._spacerBefore);
             this._intersectionObserver.unobserve(this._spacerAfter);
             this._intersectionObserver.observe(this._spacerBefore);
@@ -57,6 +67,58 @@ class ChatVirtualizer {
         });
         this._spacerResizeObserver.observe(spacerBefore);
         this._spacerResizeObserver.observe(spacerAfter);
+
+        // Tell .NET when the user leaves or returns to the bottom (drives "jump to latest").
+        this._atBottom = true;
+        this._scrollTarget = this._scrollContainer === document.documentElement ? window : this._scrollContainer;
+        this._onScroll = () => {
+            const at = this.isAtBottom();
+            if (at === this._atBottom) return;
+            this._atBottom = at;
+            this._dotNetRef.invokeMethodAsync('OnAtBottomChanged', at);
+        };
+        this._scrollTarget.addEventListener('scroll', this._onScroll, { passive: true });
+    }
+
+    _itemElement(index) {
+        return this._spacerBefore.parentElement.querySelector(`:scope > [data-cv-idx="${index}"]`);
+    }
+
+    scrollToIndex(index) {
+        const el = this._itemElement(index);
+        if (!el) return;
+        el.scrollIntoView({ block: 'center' });
+        // Restart the flash if this row is jumped to twice in a row.
+        el.classList.remove('cv-flash');
+        void el.offsetWidth;
+        el.classList.add('cv-flash');
+    }
+
+    // Where a step in direction dir (-1 earlier, +1 later) searches from: the row last jumped
+    // to while it is still on screen, otherwise the row just past the far edge of the viewport,
+    // so rows already in view are searched before anything off screen.
+    stepAnchor(dir, cursor) {
+        const sc = this._scrollContainer;
+        const top = sc === document.documentElement ? 0 : sc.getBoundingClientRect().top;
+        const bottom = top + sc.clientHeight;
+        const visible = el => {
+            const r = el.getBoundingClientRect();
+            return r.bottom > top && r.top < bottom;
+        };
+
+        const cursorEl = cursor >= 0 ? this._itemElement(cursor) : null;
+        if (cursorEl && visible(cursorEl)) return cursor;
+
+        let first = -1, last = -1;
+        for (let el = this._spacerBefore.nextElementSibling;
+             el && el !== this._spacerAfter;
+             el = el.nextElementSibling) {
+            if (!visible(el)) continue;
+            const idx = parseInt(el.dataset.cvIdx);
+            if (first < 0) first = idx;
+            last = idx;
+        }
+        return dir < 0 ? last + 1 : first - 1;
     }
 
     _onSpacerIntersection(entries) {
@@ -90,6 +152,7 @@ class ChatVirtualizer {
             info.height = newHeight;
             this._dotNetRef.invokeMethodAsync('OnItemResized', info.index, newHeight);
         }
+        this._pinToBottom();
     }
 
     refreshObservedElements() {
@@ -122,7 +185,14 @@ class ChatVirtualizer {
     }
 
     scrollToBottom() {
-        if (this._scrollContainer)
+        // Rows just rendered are still at their estimated height. Stay pinned for a moment
+        // while they are measured, or the view ends up short of the real bottom.
+        this._pinUntil = performance.now() + 1000;
+        this._pinToBottom();
+    }
+
+    _pinToBottom() {
+        if (this._scrollContainer && performance.now() < this._pinUntil)
             this._scrollContainer.scrollTop = this._scrollContainer.scrollHeight;
     }
 
@@ -135,6 +205,7 @@ class ChatVirtualizer {
     dispose() {
         this._disposed = true;
         if (this._pendingCallback !== null) clearTimeout(this._pendingCallback);
+        this._scrollTarget.removeEventListener('scroll', this._onScroll);
         this._intersectionObserver?.disconnect();
         this._resizeObserver?.disconnect();
         this._spacerResizeObserver?.disconnect();

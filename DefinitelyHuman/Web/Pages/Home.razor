@@ -1,4 +1,5 @@
 @page "/"
+@page "/c/{ChannelSlug}"
 @rendermode InteractiveServer
 
 @using System.Globalization
@@ -6,6 +7,7 @@
 @using DefinitelyHuman.Data
 @using DefinitelyHuman.Irc
 @using DefinitelyHuman.Web.Components.Chat
+@using DefinitelyHuman.Web.Layout
 @using Microsoft.Data.Sqlite
 @using LinkPreviewService = DefinitelyHuman.Utilities.LinkPreviewService
 
@@ -16,11 +18,27 @@
 @implements IDisposable
 
 <div class="page-header">
-    <h2>Timeline</h2>
+    <h2>@_channel</h2>
+    <span class="tl-where">as @Bot.Nick</span>
+
+    @* One pair of step buttons: they walk matches while there is find text, the bot's decisions otherwise. *@
+    <div class="tl-tools">
+        <span class="tl-step-note" role="status">@_stepNote</span>
+        <input class="tl-find" type="search" placeholder="Find in log" aria-label="Find in log"
+               title="Enter: earlier match. Shift+Enter: later match."
+               @bind="_find" @bind:event="oninput" @onkeydown="OnFindKey" />
+        <div class="tl-step" role="group" aria-label="@($"Step through {StepWhat}")">
+            <span class="tl-step-what">@StepWhat</span>
+            <button type="button" title="Earlier ([)" @onclick="() => Step(-1)">Earlier</button>
+            <button type="button" title="Later (])" @onclick="() => Step(1)">Later</button>
+        </div>
+    </div>
 </div>
 
-<div class="page-body">
-    <ChatVirtualize @ref="_virtualizer" TItem="TimelineRow" ItemsProvider="ProvideRows" ItemSize="28">
+<div class="page-body" tabindex="0" role="region" aria-label="@($"{_channel} timeline")" @onkeydown="OnTimelineKey">
+    @* Keyed by channel: switching channel starts a fresh list, scrolled to its newest line. *@
+    <ChatVirtualize @key="_channel" @ref="_virtualizer" TItem="TimelineRow" ItemsProvider="ProvideRows" ItemSize="28"
+                    AtBottomChanged="OnAtBottomChanged">
         <ItemContent>
             @if (context.ShowDaySeparator)
             {
@@ -69,19 +87,23 @@
                 <div class="tl-agent">
                     @foreach (var evt in context.Events)
                     {
-                        <div class="tl-evt @($"k-{evt.Kind.ToString().ToLowerInvariant()}")"
+                        <div class="tl-evt @EventClass(evt)"
                              title="@evt.Timestamp.ToLocalTime().ToString("HH:mm:ss")">
-                            <span class="tl-marker">~</span>
+                            <span class="tl-marker" aria-hidden="true"></span>
                             @if (!string.IsNullOrEmpty(evt.Detail))
                             {
                                 <details class="tl-detail">
-                                    <summary>@Compact(evt.Summary)</summary>
+                                    <summary>@Label(evt)</summary>
                                     <pre>@evt.Detail</pre>
                                 </details>
                             }
                             else
                             {
-                                <span class="tl-summary">@Compact(evt.Summary)</span>
+                                <span class="tl-summary">@Label(evt)</span>
+                            }
+                            @if (Delta(context, evt) is { } delta)
+                            {
+                                <span class="tl-delta">@delta</span>
                             }
                         </div>
                     }
@@ -90,6 +112,13 @@
         </ItemContent>
     </ChatVirtualize>
 </div>
+
+@if (!_atBottom)
+{
+    <button type="button" class="tl-latest" title="Jump to latest (End)" @onclick="JumpToLatest">
+        @(_newCount == 0 ? "Jump to latest" : _newCount == 1 ? "1 new line" : $"{_newCount} new lines")
+    </button>
+}
 
 @code {
     private sealed record AgentEventView(DateTime Timestamp, AgentEventKind Kind, string Summary, string? Detail);
@@ -107,6 +136,23 @@
 
     private ChatVirtualize<TimelineRow>? _virtualizer;
 
+    /// <summary>The channel in the URL (see <see cref="ChannelNav.Slug"/>); none means the bot's own channel.</summary>
+    [Parameter] public string? ChannelSlug { get; set; }
+
+    private string _channel = "";
+
+    protected override void OnParametersSet()
+    {
+        string channel = ChannelSlug is null ? Bot.Channel : ChannelNav.FromSlug(ChannelSlug);
+        if (channel == _channel)
+            return;
+
+        _channel = channel;
+        _atBottom = true;
+        _newCount = 0;
+        _stepNote = "";
+    }
+
     protected override void OnInitialized()
     {
         Bot.MessageLogged += OnMessageLogged;
@@ -114,15 +160,108 @@
         Previews.PreviewReady += OnPreviewReady;
     }
 
-    private Task OnMessageLogged() { OnChanged(); return Task.CompletedTask; }
-    private void OnAgentUpdated() => OnChanged();
+    private Task OnMessageLogged() { OnChanged(newLine: true); return Task.CompletedTask; }
+    private void OnAgentUpdated() => OnChanged(newLine: false);
     private void OnPreviewReady() => _ = InvokeAsync(StateHasChanged);
 
-    private void OnChanged() => _ = InvokeAsync(async () =>
+    private void OnChanged(bool newLine) => _ = InvokeAsync(async () =>
     {
+        // ponytail: MessageLogged doesn't say which channel; once the bot is in several, pass
+        // the channel along so lines elsewhere don't count here.
+        if (newLine && !_atBottom)
+        {
+            _newCount++;
+            StateHasChanged();
+        }
         if (_virtualizer is not null)
             await _virtualizer.RefreshDataAsync();
     });
+
+    // ------------------------------------------------------------------ Getting around the log
+
+    private bool _atBottom = true;
+    private int _newCount;   // lines that arrived while scrolled away from the bottom
+    private string _find = "";
+    private string _stepNote = "";
+
+    private string StepWhat => _find.Trim().Length > 0 ? "Matches" : "Decisions";
+
+    private void OnAtBottomChanged(bool atBottom)
+    {
+        _atBottom = atBottom;
+        if (atBottom) _newCount = 0;
+    }
+
+    private async Task JumpToLatest()
+    {
+        _stepNote = "";
+        if (_virtualizer is not null)
+            await _virtualizer.ScrollToBottomAsync();
+    }
+
+    private Task OnFindKey(KeyboardEventArgs e) =>
+        e.Key == "Enter" ? Step(e.ShiftKey ? 1 : -1) : Task.CompletedTask;
+
+    private Task OnTimelineKey(KeyboardEventArgs e) => e.Key switch
+    {
+        "[" => Step(-1),
+        "]" => Step(1),
+        "End" => JumpToLatest(),
+        _ => Task.CompletedTask,
+    };
+
+    // The glance outcomes worth stepping between. ponytail: matched on the summary text
+    // ChatAgent writes; give AgentEvent an outcome column if the wording starts to drift.
+    private const string RepliedPrefix = "replied";
+    private const string QuietSuffix = " — decided to stay quiet";
+
+    /// <summary>
+    /// Jumps to the nearest find match (or, with no find text, the nearest line where the bot
+    /// replied or decided to stay quiet) before or after where the user is looking.
+    /// </summary>
+    private async Task Step(int dir)
+    {
+        if (_virtualizer is null) return;
+
+        string find = _find.Trim();
+        string what = find.Length > 0 ? $"match for \"{find}\"" : "decision";
+
+        await using var conn = new SqliteConnection($"Data Source={DbPath}");
+        await conn.OpenAsync();
+
+        // Earlier: before the anchor line. Later: from the line after it. An event belongs to
+        // the latest line at or before it, so these bounds never land back on the anchor.
+        int anchor = await _virtualizer.StepAnchorAsync(dir);
+        var bound = await Exec(conn, "SELECT Timestamp FROM Messages WHERE Channel = @ch ORDER BY Timestamp LIMIT 1 OFFSET @o",
+            ("@ch", _channel), ("@o", Math.Max(0, dir < 0 ? anchor : anchor + 1))) as string;
+        if (dir < 0) bound ??= "9999";   // anchored past the last line: everything is earlier
+
+        // A reply's event is stamped just before its line, so place it by the line it produced.
+        string source = find.Length > 0
+            ? @"SELECT Timestamp AS At FROM Messages WHERE Channel = @ch AND (Text LIKE @q ESCAPE '\' OR Nick LIKE @q ESCAPE '\')"
+            : """
+              SELECT COALESCE((SELECT m.Timestamp FROM Messages m WHERE m.MessageId = e.MessageId), e.Timestamp) AS At
+              FROM AgentEvents e
+              WHERE e.Channel = @ch AND e.Kind = 'Decision' AND (e.Summary LIKE @replied OR e.Summary LIKE @quiet)
+              """;
+        (string, object)[] args = find.Length > 0
+            ? [("@ch", _channel), ("@ts", bound ?? ""), ("@q", $"%{find.Replace(@"\", @"\\").Replace("%", @"\%").Replace("_", @"\_")}%")]
+            : [("@ch", _channel), ("@ts", bound ?? ""), ("@replied", RepliedPrefix + "%"), ("@quiet", "%" + QuietSuffix)];
+
+        var at = bound is null ? null : await Exec(conn,
+            $"SELECT At FROM ({source}) WHERE At {(dir < 0 ? "<" : ">=")} @ts ORDER BY At {(dir < 0 ? "DESC" : "ASC")} LIMIT 1",
+            args) as string;
+
+        if (at is null)
+        {
+            _stepNote = $"No {(dir < 0 ? "earlier" : "later")} {what}";
+            return;
+        }
+
+        _stepNote = "";
+        int index = Convert.ToInt32(await Exec(conn, "SELECT COUNT(*) FROM Messages WHERE Channel = @ch AND Timestamp <= @t", ("@ch", _channel), ("@t", at))) - 1;
+        await _virtualizer.ScrollToIndexAsync(Math.Max(0, index));
+    }
 
     // ------------------------------------------------------------------ ItemsProvider
 
@@ -134,7 +273,7 @@
         await using var conn = new SqliteConnection($"Data Source={DbPath}");
         await conn.OpenAsync(request.CancellationToken);
 
-        int totalCount = Convert.ToInt32(await Exec(conn, "SELECT COUNT(*) FROM Messages"));
+        int totalCount = Convert.ToInt32(await Exec(conn, "SELECT COUNT(*) FROM Messages WHERE Channel = @ch", ("@ch", _channel)));
 
         if (totalCount == 0 || request.Count == 0)
             return new ItemsProviderResult<TimelineRow>([], totalCount);
@@ -143,8 +282,8 @@
         DateTime? prevTimestamp = null;
         if (request.StartIndex > 0)
         {
-            var ts = await Exec(conn, "SELECT Timestamp FROM Messages ORDER BY Timestamp LIMIT 1 OFFSET @o",
-                ("@o", request.StartIndex - 1));
+            var ts = await Exec(conn, "SELECT Timestamp FROM Messages WHERE Channel = @ch ORDER BY Timestamp LIMIT 1 OFFSET @o",
+                ("@ch", _channel), ("@o", request.StartIndex - 1));
             if (ts is string s) prevTimestamp = DateTime.Parse(s, null, DateTimeStyles.RoundtripKind);
         }
 
@@ -157,8 +296,10 @@
         {
             cmd.CommandText = """
                 SELECT MessageId, Timestamp, Nick, Text, IsOwnMessage FROM Messages
+                WHERE Channel = @ch
                 ORDER BY Timestamp LIMIT @n OFFSET @o
                 """;
+            cmd.Parameters.AddWithValue("@ch", _channel);
             cmd.Parameters.AddWithValue("@n", request.Count);
             cmd.Parameters.AddWithValue("@o", request.StartIndex);
 
@@ -195,21 +336,22 @@
     /// Puts each agent event on a chat line: the message it produced if it is linked to one (a
     /// reply), otherwise the latest line at the time it happened (the one it was reacting to).
     /// </summary>
-    private static async Task AttachEvents(SqliteConnection conn, List<TimelineRow> rows, ItemsProviderRequest request)
+    private async Task AttachEvents(SqliteConnection conn, List<TimelineRow> rows, ItemsProviderRequest request)
     {
         // Unlinked events between this page's first line and the next page's first line belong
         // here. The first page also takes anything from before the first message.
         string from = request.StartIndex == 0 ? "" : rows[0].RawTimestamp;
-        string to = await Exec(conn, "SELECT Timestamp FROM Messages ORDER BY Timestamp LIMIT 1 OFFSET @o",
-            ("@o", request.StartIndex + rows.Count)) as string ?? "9999";
+        string to = await Exec(conn, "SELECT Timestamp FROM Messages WHERE Channel = @ch ORDER BY Timestamp LIMIT 1 OFFSET @o",
+            ("@ch", _channel), ("@o", request.StartIndex + rows.Count)) as string ?? "9999";
 
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = $"""
             SELECT Timestamp, Kind, Summary, Detail, MessageId FROM AgentEvents
             WHERE MessageId IN ({string.Join(',', rows.Select(r => r.MessageId))})
-               OR (MessageId IS NULL AND Timestamp >= @from AND Timestamp < @to)
+               OR (MessageId IS NULL AND Channel = @ch AND Timestamp >= @from AND Timestamp < @to)
             ORDER BY Timestamp
             """;
+        cmd.Parameters.AddWithValue("@ch", _channel);
         cmd.Parameters.AddWithValue("@from", from);
         cmd.Parameters.AddWithValue("@to", to);
 
@@ -217,14 +359,17 @@
         await using var reader = await cmd.ExecuteReaderAsync(request.CancellationToken);
         while (await reader.ReadAsync(request.CancellationToken))
         {
+            string raw = reader.GetString(0);
             var evt = new AgentEventView(
-                DateTime.Parse(reader.GetString(0), null, DateTimeStyles.RoundtripKind),
+                DateTime.Parse(raw, null, DateTimeStyles.RoundtripKind),
                 Enum.Parse<AgentEventKind>(reader.GetString(1)),
                 reader.GetString(2),
                 reader.IsDBNull(3) ? null : reader.GetString(3));
 
+            // Compared as stored, the way the rows themselves are ordered, so an event lands on
+            // the same line the database would pick for it.
             var row = reader.IsDBNull(4)
-                ? rows.LastOrDefault(r => r.Timestamp <= evt.Timestamp) ?? rows[0]
+                ? rows.LastOrDefault(r => string.CompareOrdinal(r.RawTimestamp, raw) <= 0) ?? rows[0]
                 : byId[reader.GetInt32(4)];
             row.Events.Add(evt);
         }
@@ -241,6 +386,49 @@
         return start < 0 || end <= start
             ? summary
             : (summary[..start] + summary[(end + 1)..]).Replace("pinged by while", "pinged while");
+    }
+
+    /// <summary>
+    /// The text shown for an event. A glance that ended in silence leads with that outcome
+    /// ("stayed quiet (idle, focus 0.31)"), so it scans like "replied (…)" does.
+    /// </summary>
+    private static string Label(AgentEventView evt)
+    {
+        if (evt.Kind != AgentEventKind.Decision)
+            return evt.Summary;
+
+        const string glanced = "glanced ";
+        return evt.Summary.StartsWith(glanced, StringComparison.Ordinal) && evt.Summary.EndsWith(QuietSuffix, StringComparison.Ordinal)
+            ? "stayed quiet " + evt.Summary[glanced.Length..^QuietSuffix.Length]
+            : Compact(evt.Summary);
+    }
+
+    /// <summary>
+    /// CSS classes for an event: its kind, plus for decisions what came of it, so the two real
+    /// outcomes (replied, stayed quiet) stand apart from the noticing and ignoring around them.
+    /// </summary>
+    private static string EventClass(AgentEventView evt)
+    {
+        string kind = $"k-{evt.Kind.ToString().ToLowerInvariant()}";
+        if (evt.Kind != AgentEventKind.Decision)
+            return kind;
+
+        string outcome =
+            evt.Summary.StartsWith(RepliedPrefix, StringComparison.Ordinal) ? "o-replied" :
+            evt.Summary.EndsWith(QuietSuffix, StringComparison.Ordinal) ? "o-quiet" :
+            evt.Summary.StartsWith("ignored", StringComparison.Ordinal) ? "o-ignored" :
+            "o-noticed";
+        return $"{kind} {outcome}";
+    }
+
+    /// <summary>How long after its chat line an event happened, when that is long enough to matter.</summary>
+    private static string? Delta(TimelineRow row, AgentEventView evt)
+    {
+        var d = evt.Timestamp - row.Timestamp;
+        return d < TimeSpan.FromSeconds(2) ? null
+            : d < TimeSpan.FromMinutes(1) ? $"+{(int)d.TotalSeconds}s"
+            : d < TimeSpan.FromHours(1) ? $"+{(int)d.TotalMinutes}m{d.Seconds:00}s"
+            : $"+{(int)d.TotalHours}h{d.Minutes:00}m";
     }
 
     private static async Task<object?> Exec(SqliteConnection conn, string sql, params (string name, object value)[] args)

@@ -59,6 +59,7 @@ public class ChatAgent
     private readonly Lock _glanceLock = new();
     private CancellationTokenSource? _pendingGlance;
     private bool _pendingHighlight;
+    private DateTime? _nextGlanceAt;
 
     // "Last really focused": the bookmark for unread history. Only advances when the bot
     // actually engages, so a glance reads the whole conversation since it was last involved.
@@ -66,7 +67,7 @@ public class ChatAgent
 
     // Above this focus, a glance is treated as being mid-conversation (respond if addressed)
     // rather than an idle peek (reluctant). ~0.5 ≈ within a few minutes of last engaging.
-    private const double ActiveConversationFocus = 0.5;
+    public const double ActiveConversationFocus = 0.5;
     
     public ChatAgent(ChatAgentOptions options, AgentLog agentLog, ILogger<ChatAgent> logger)
     {
@@ -141,6 +142,12 @@ public class ChatAgent
     /// <summary>The bot's current attention level (0..1), decayed to now. For the dashboard.</summary>
     public double CurrentFocus => _attention.Current();
 
+    /// <summary>When the pending glance will fire, or null if none is scheduled. For the dashboard.</summary>
+    public DateTime? NextGlanceAt
+    {
+        get { lock (_glanceLock) return _nextGlanceAt; }
+    }
+
     /// <summary>
     /// The channel log changed. <paramref name="mentionsMe"/> is the client's highlight beep:
     /// a mention forces attention regardless of focus; otherwise focus decides whether to glance.
@@ -195,6 +202,7 @@ public class ChatAgent
             delay = _pendingHighlight || followUp ? _attention.MentionNoticeDelay() : _attention.AmbientNoticeDelay(focus);
             cts = new CancellationTokenSource();
             _pendingGlance = cts;
+            _nextGlanceAt = DateTime.UtcNow + delay;
             LogDecision($"noticed \"{line}\" — glancing in {delay.TotalSeconds:F0}s " +
                         $"({(_pendingHighlight ? "mention" : followUp ? "follow-up" : "ambient")}, focus {focus:F2})");
         }
@@ -223,6 +231,7 @@ public class ChatAgent
             highlight = _pendingHighlight;
             since = _lastFocusedAt;
             _pendingGlance = null;
+            _nextGlanceAt = null;
             _pendingHighlight = false;
         }
 
