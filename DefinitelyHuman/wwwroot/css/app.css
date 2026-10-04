@@ -323,8 +323,20 @@ body {
     padding: 0 3px;
 }
 
-/* Agent event rows — indented and muted so chat stays readable */
+/* Agent column — what the bot did about a chat line, beside it instead of on rows of its own */
+.tl-agent {
+    flex: 0 0 36%;
+    min-width: 0;
+    align-self: stretch;
+    padding-left: 0.6rem;
+    border-left: 1px solid var(--border);
+}
+
+/* Agent events — muted so chat stays readable */
 .tl-evt {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
     color: var(--text-muted);
     font-size: 0.82rem;
 }

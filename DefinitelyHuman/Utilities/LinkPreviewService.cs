@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net.Http.Headers;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using DefinitelyHuman.Data;
 using Microsoft.EntityFrameworkCore;
@@ -137,6 +138,14 @@ public sealed partial class LinkPreviewService : IDisposable
         await _concurrency.WaitAsync();
         try
         {
+            if (IsYouTube(url) && await FetchYouTubeAsync(url) is { } video)
+            {
+                _cache[url] = video;
+                await PersistAsync(video);
+                PreviewReady?.Invoke();
+                return;
+            }
+
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/html"));
 
@@ -209,6 +218,32 @@ public sealed partial class LinkPreviewService : IDisposable
         {
             _concurrency.Release();
         }
+    }
+
+    private static bool IsYouTube(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri)
+        && (uri.Host is "youtu.be" or "youtube.com" || uri.Host.EndsWith(".youtube.com", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// YouTube serves datacenter addresses a bot check or a page without OpenGraph tags, so its
+    /// videos are looked up through the oEmbed endpoint instead. Null means "not a video or it
+    /// failed" and the caller falls back to scraping.
+    /// </summary>
+    private async Task<LinkPreview?> FetchYouTubeAsync(string url)
+    {
+        using var response = await _http.GetAsync(
+            $"https://www.youtube.com/oembed?format=json&url={Uri.EscapeDataString(url)}");
+        if (!response.IsSuccessStatusCode)
+            return null;
+
+        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        string? Field(string name) =>
+            doc.RootElement.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+                ? value.GetString()
+                : null;
+
+        string? title = Field("title");
+        return title is null ? null : new LinkPreview(url, title, Field("author_name"), Field("thumbnail_url"));
     }
 
     private record OgData(string? Title, string? Description, string? ImageUrl, string? SiteName);

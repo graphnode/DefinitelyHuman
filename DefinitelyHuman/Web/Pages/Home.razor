@@ -6,7 +6,6 @@
 @using DefinitelyHuman.Data
 @using DefinitelyHuman.Irc
 @using DefinitelyHuman.Web.Components.Chat
-@using Microsoft.AspNetCore.Components.Web.Virtualization
 @using Microsoft.Data.Sqlite
 @using LinkPreviewService = DefinitelyHuman.Utilities.LinkPreviewService
 
@@ -29,80 +28,82 @@
                     <hr /><span>@FormatDate(context.Timestamp)</span><hr />
                 </div>
             }
-            @if (context.IsMessage)
-            {
-                <div class="tl-row tl-msg @MsgRowClass(context)">
-                    <span class="tl-time">@context.Timestamp.ToLocalTime().ToString("HH:mm:ss")</span>
-                    <span class="tl-nick" style="color:@NickColor(context.Nick!, context.IsOwnMessage)">@context.Nick</span>
-                    <div class="tl-content">
-                        <span class="tl-text">@RenderText(context.Text!)</span>
-                        @foreach (var preview in GetPreviews(context.Text!))
+            <div class="tl-row tl-msg @MsgRowClass(context)">
+                <span class="tl-time">@context.Timestamp.ToLocalTime().ToString("HH:mm:ss")</span>
+                <span class="tl-nick" style="color:@NickColor(context.Nick, context.IsOwnMessage)">@context.Nick</span>
+                <div class="tl-content">
+                    <span class="tl-text">@RenderText(context.Text)</span>
+                    @foreach (var preview in GetPreviews(context.Text))
+                    {
+                        @if (preview.IsImageOnly)
                         {
-                            @if (preview.IsImageOnly)
+                            <a class="tl-thumb" href="@preview.Url" target="_blank" rel="noopener">
+                                <img src="@preview.ImageUrl" alt="" loading="lazy"
+                                     onerror="this.parentElement.style.display='none'" />
+                            </a>
+                        }
+                        else
+                        {
+                            <a class="tl-preview" href="@preview.Url" target="_blank" rel="noopener">
+                                @if (preview.ImageUrl is not null)
+                                {
+                                    <img class="tl-preview-img" src="@preview.ImageUrl" alt="" loading="lazy"
+                                         onerror="this.style.display='none'" />
+                                }
+                                <div class="tl-preview-body">
+                                    @if (preview.Title is not null)
+                                    {
+                                        <div class="tl-preview-title">@preview.Title</div>
+                                    }
+                                    @if (preview.Description is not null)
+                                    {
+                                        <div class="tl-preview-desc">@Truncate(preview.Description, 160)</div>
+                                    }
+                                    <div class="tl-preview-site">@Domain(preview.Url)</div>
+                                </div>
+                            </a>
+                        }
+                    }
+                </div>
+                @* What the agent did about this line, in its own column so it adds no timeline rows. *@
+                <div class="tl-agent">
+                    @foreach (var evt in context.Events)
+                    {
+                        <div class="tl-evt @($"k-{evt.Kind.ToString().ToLowerInvariant()}")"
+                             title="@evt.Timestamp.ToLocalTime().ToString("HH:mm:ss")">
+                            <span class="tl-marker">~</span>
+                            @if (!string.IsNullOrEmpty(evt.Detail))
                             {
-                                <a class="tl-thumb" href="@preview.Url" target="_blank" rel="noopener">
-                                    <img src="@preview.ImageUrl" alt="" loading="lazy"
-                                         onerror="this.parentElement.style.display='none'" />
-                                </a>
+                                <details class="tl-detail">
+                                    <summary>@Compact(evt.Summary)</summary>
+                                    <pre>@evt.Detail</pre>
+                                </details>
                             }
                             else
                             {
-                                <a class="tl-preview" href="@preview.Url" target="_blank" rel="noopener">
-                                    @if (preview.ImageUrl is not null)
-                                    {
-                                        <img class="tl-preview-img" src="@preview.ImageUrl" alt="" loading="lazy"
-                                             onerror="this.style.display='none'" />
-                                    }
-                                    <div class="tl-preview-body">
-                                        @if (preview.Title is not null)
-                                        {
-                                            <div class="tl-preview-title">@preview.Title</div>
-                                        }
-                                        @if (preview.Description is not null)
-                                        {
-                                            <div class="tl-preview-desc">@Truncate(preview.Description, 160)</div>
-                                        }
-                                        <div class="tl-preview-site">@Domain(preview.Url)</div>
-                                    </div>
-                                </a>
+                                <span class="tl-summary">@Compact(evt.Summary)</span>
                             }
-                        }
-                    </div>
-                </div>
-            }
-            else
-            {
-                <div class="tl-row tl-evt @($"k-{context.Kind!.ToString()!.ToLowerInvariant()}")">
-                    <span class="tl-time">@context.Timestamp.ToLocalTime().ToString("HH:mm:ss")</span>
-                    <span class="tl-marker">~</span>
-                    @if (!string.IsNullOrEmpty(context.Detail))
-                    {
-                        <details class="tl-detail">
-                            <summary>@context.Summary</summary>
-                            <pre>@context.Detail</pre>
-                        </details>
-                    }
-                    else
-                    {
-                        <span class="tl-summary">@context.Summary</span>
+                        </div>
                     }
                 </div>
-            }
+            </div>
         </ItemContent>
     </ChatVirtualize>
 </div>
 
 @code {
+    private sealed record AgentEventView(DateTime Timestamp, AgentEventKind Kind, string Summary, string? Detail);
+
+    // One row per chat line; the agent's events about that line ride along in Events.
     private sealed record TimelineRow(
+        int MessageId,
         DateTime Timestamp,
-        bool IsMessage,
-        bool ShowDaySeparator = false,
-        string? Nick = null,
-        string? Text = null,
-        bool IsOwnMessage = false,
-        AgentEventKind? Kind = null,
-        string? Summary = null,
-        string? Detail = null);
+        string RawTimestamp,
+        string Nick,
+        string Text,
+        bool IsOwnMessage,
+        List<AgentEventView> Events,
+        bool ShowDaySeparator = false);
 
     private ChatVirtualize<TimelineRow>? _virtualizer;
 
@@ -133,8 +134,7 @@
         await using var conn = new SqliteConnection($"Data Source={DbPath}");
         await conn.OpenAsync(request.CancellationToken);
 
-        int totalCount = Convert.ToInt32(
-            await Exec(conn, "SELECT (SELECT COUNT(*) FROM Messages) + (SELECT COUNT(*) FROM AgentEvents)"));
+        int totalCount = Convert.ToInt32(await Exec(conn, "SELECT COUNT(*) FROM Messages"));
 
         if (totalCount == 0 || request.Count == 0)
             return new ItemsProviderResult<TimelineRow>([], totalCount);
@@ -143,63 +143,104 @@
         DateTime? prevTimestamp = null;
         if (request.StartIndex > 0)
         {
-            var ts = await Exec(conn, """
-                SELECT Timestamp FROM (
-                    SELECT Timestamp FROM Messages UNION ALL SELECT Timestamp FROM AgentEvents
-                ) ORDER BY Timestamp LIMIT 1 OFFSET @o
-                """, ("@o", request.StartIndex - 1));
+            var ts = await Exec(conn, "SELECT Timestamp FROM Messages ORDER BY Timestamp LIMIT 1 OFFSET @o",
+                ("@o", request.StartIndex - 1));
             if (ts is string s) prevTimestamp = DateTime.Parse(s, null, DateTimeStyles.RoundtripKind);
         }
-
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            SELECT Timestamp, IsMessage, Nick, Text, IsOwnMessage, Kind, Summary, Detail FROM (
-                SELECT Timestamp, 1 AS IsMessage, Nick, Text, IsOwnMessage,
-                       NULL AS Kind, NULL AS Summary, NULL AS Detail FROM Messages
-                UNION ALL
-                SELECT Timestamp, 0, NULL, NULL, 0, Kind, Summary, Detail FROM AgentEvents
-            ) ORDER BY Timestamp LIMIT @n OFFSET @o
-            """;
-        cmd.Parameters.AddWithValue("@n", request.Count);
-        cmd.Parameters.AddWithValue("@o", request.StartIndex);
 
         var rows = new List<TimelineRow>();
         DateOnly? lastDate = prevTimestamp.HasValue
             ? DateOnly.FromDateTime(prevTimestamp.Value.ToLocalTime())
             : null;
 
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = """
+                SELECT MessageId, Timestamp, Nick, Text, IsOwnMessage FROM Messages
+                ORDER BY Timestamp LIMIT @n OFFSET @o
+                """;
+            cmd.Parameters.AddWithValue("@n", request.Count);
+            cmd.Parameters.AddWithValue("@o", request.StartIndex);
+
+            await using var reader = await cmd.ExecuteReaderAsync(request.CancellationToken);
+            while (await reader.ReadAsync(request.CancellationToken))
+            {
+                string raw = reader.GetString(1);
+                var row = new TimelineRow(
+                    MessageId: reader.GetInt32(0),
+                    Timestamp: DateTime.Parse(raw, null, DateTimeStyles.RoundtripKind),
+                    RawTimestamp: raw,
+                    Nick: reader.GetString(2),
+                    Text: reader.GetString(3),
+                    IsOwnMessage: reader.GetInt32(4) != 0,
+                    Events: []);
+
+                var localDate = DateOnly.FromDateTime(row.Timestamp.ToLocalTime());
+                if (lastDate is null || localDate != lastDate)
+                {
+                    row = row with { ShowDaySeparator = true };
+                    lastDate = localDate;
+                }
+                rows.Add(row);
+            }
+        }
+
+        if (rows.Count > 0)
+            await AttachEvents(conn, rows, request);
+
+        return new ItemsProviderResult<TimelineRow>(rows, totalCount);
+    }
+
+    /// <summary>
+    /// Puts each agent event on a chat line: the message it produced if it is linked to one (a
+    /// reply), otherwise the latest line at the time it happened (the one it was reacting to).
+    /// </summary>
+    private static async Task AttachEvents(SqliteConnection conn, List<TimelineRow> rows, ItemsProviderRequest request)
+    {
+        // Unlinked events between this page's first line and the next page's first line belong
+        // here. The first page also takes anything from before the first message.
+        string from = request.StartIndex == 0 ? "" : rows[0].RawTimestamp;
+        string to = await Exec(conn, "SELECT Timestamp FROM Messages ORDER BY Timestamp LIMIT 1 OFFSET @o",
+            ("@o", request.StartIndex + rows.Count)) as string ?? "9999";
+
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"""
+            SELECT Timestamp, Kind, Summary, Detail, MessageId FROM AgentEvents
+            WHERE MessageId IN ({string.Join(',', rows.Select(r => r.MessageId))})
+               OR (MessageId IS NULL AND Timestamp >= @from AND Timestamp < @to)
+            ORDER BY Timestamp
+            """;
+        cmd.Parameters.AddWithValue("@from", from);
+        cmd.Parameters.AddWithValue("@to", to);
+
+        var byId = rows.ToDictionary(r => r.MessageId);
         await using var reader = await cmd.ExecuteReaderAsync(request.CancellationToken);
         while (await reader.ReadAsync(request.CancellationToken))
         {
-            var timestamp = DateTime.Parse(reader.GetString(0), null, DateTimeStyles.RoundtripKind);
-            bool isMessage = reader.GetInt32(1) == 1;
+            var evt = new AgentEventView(
+                DateTime.Parse(reader.GetString(0), null, DateTimeStyles.RoundtripKind),
+                Enum.Parse<AgentEventKind>(reader.GetString(1)),
+                reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3));
 
-            TimelineRow row;
-            if (isMessage)
-            {
-                row = new TimelineRow(timestamp, true,
-                    Nick: reader.GetString(2),
-                    Text: reader.GetString(3),
-                    IsOwnMessage: reader.GetInt32(4) != 0);
-            }
-            else
-            {
-                row = new TimelineRow(timestamp, false,
-                    Kind: Enum.Parse<AgentEventKind>(reader.GetString(5)),
-                    Summary: reader.GetString(6),
-                    Detail: reader.IsDBNull(7) ? null : reader.GetString(7));
-            }
-
-            var localDate = DateOnly.FromDateTime(row.Timestamp.ToLocalTime());
-            if (lastDate is null || localDate != lastDate)
-            {
-                row = row with { ShowDaySeparator = true };
-                lastDate = localDate;
-            }
-            rows.Add(row);
+            var row = reader.IsDBNull(4)
+                ? rows.LastOrDefault(r => r.Timestamp <= evt.Timestamp) ?? rows[0]
+                : byId[reader.GetInt32(4)];
+            row.Events.Add(evt);
         }
+    }
 
-        return new ItemsProviderResult<TimelineRow>(rows, totalCount);
+    /// <summary>
+    /// Summaries quote the line they are about ("noticed "&lt;nick&gt; text" — glancing…"). Next to
+    /// that very line the quote is noise, so drop it.
+    /// </summary>
+    private static string Compact(string summary)
+    {
+        int start = summary.IndexOf(" \"<", StringComparison.Ordinal);
+        int end = summary.LastIndexOf("\" ", StringComparison.Ordinal);
+        return start < 0 || end <= start
+            ? summary
+            : (summary[..start] + summary[(end + 1)..]).Replace("pinged by while", "pinged while");
     }
 
     private static async Task<object?> Exec(SqliteConnection conn, string sql, params (string name, object value)[] args)
@@ -236,7 +277,7 @@
     private string MsgRowClass(TimelineRow row)
     {
         if (row.IsOwnMessage) return "own-message";
-        return MentionsBot(row.Text!) ? "mention" : "";
+        return MentionsBot(row.Text) ? "mention" : "";
     }
 
     private bool MentionsBot(string text) =>
