@@ -1,0 +1,107 @@
+@page "/settings"
+@rendermode InteractiveServer
+
+@using DefinitelyHuman.Agent
+@using DefinitelyHuman.Memory
+
+@inject AppSettings AppSettings
+@inject MemoryService MemoryService
+
+<div class="page-header">
+    <h2>Settings</h2>
+    <span class="tl-where">Saved in the database; they apply from the next model call.</span>
+</div>
+
+<div class="page-body mem-page">
+    <form class="settings" @onsubmit="Save">
+        <h3>Models</h3>
+        @foreach (var (key, label, hint) in Models)
+        {
+            <label>
+                <span>@label</span>
+                <input list="model-ids" @bind="_values[key]" spellcheck="false" autocomplete="off" />
+                <small>@hint</small>
+            </label>
+        }
+        <datalist id="model-ids">
+            <option value="claude-haiku-4-5-20251001"></option>
+            <option value="claude-sonnet-5-5"></option>
+            <option value="claude-opus-5-5"></option>
+            <option value="claude-fable-5-1"></option>
+        </datalist>
+
+        <h3>Memory</h3>
+        @foreach (var (key, label, hint) in Switches)
+        {
+            <label class="mem-check">
+                <input type="checkbox" checked="@(_values[key] == "true")"
+                       @onchange="e => _values[key] = e.Value is true ? TrueValue : FalseValue" />
+                <span>@label</span>
+                <small>@hint</small>
+            </label>
+        }
+
+        <div class="mem-filters">
+            <button type="submit">Save</button>
+            <span class="mem-note" role="status">@_saved</span>
+        </div>
+    </form>
+
+    <h3>Start over</h3>
+    <form class="mem-filters" @onsubmit="Wipe">
+        <span>Forget every entity, fact and run, and read the whole chat log again. The log itself is kept.</span>
+        <input placeholder="type: forget" aria-label="Type forget to confirm" @bind="_wipeConfirm" @bind:event="oninput" />
+        <button type="submit" disabled="@(_wipeConfirm.Trim() != "forget")">Wipe memory</button>
+        <span class="mem-note" role="status">@_wiped</span>
+    </form>
+</div>
+
+@code {
+    private const string TrueValue = "true";
+    private const string FalseValue = "false";
+
+    private static readonly (string Key, string Label, string Hint)[] Models =
+    [
+        (AppSettings.ChatModel, "Channel chatting", "Reads the channel and decides whether and what to say. Called often, so a fast model."),
+        (AppSettings.ExtractionModel, "Memory extraction", "Reads new chat lines and writes down facts. One call per conversation."),
+        (AppSettings.CurationModel, "Memory curation", "Nightly: merges, invalidates and draws conclusions. Few calls, where judgment matters most."),
+    ];
+
+    private static readonly (string Key, string Label, string Hint)[] Switches =
+    [
+        (AppSettings.ExtractionEnabled, "Extract facts from the chat log", "Off: new lines wait unread and are picked up when it is switched back on."),
+        (AppSettings.CurationEnabled, "Curate nightly", "After 04:00 UTC. \"Curate now\" on the runs page works either way."),
+        (AppSettings.RecallEnabled, "Let the bot use its memory when chatting", "Off: memory is still built, but the chat model never sees it."),
+    ];
+
+    private readonly Dictionary<string, string> _values = [];
+    private string _saved = "";
+    private string _wipeConfirm = "";
+    private string _wiped = "";
+
+    protected override void OnInitialized()
+    {
+        foreach (string key in Models.Select(m => m.Key).Concat(Switches.Select(s => s.Key)))
+            _values[key] = AppSettings.Get(key);
+    }
+
+    private async Task Save()
+    {
+        foreach (var (key, value) in _values.ToList())
+        {
+            await AppSettings.SetAsync(key, value);
+            _values[key] = AppSettings.Get(key); // a blanked field falls back to its default
+        }
+        _saved = $"Saved at {DateTime.Now:HH:mm:ss}.";
+    }
+
+    private async Task Wipe()
+    {
+        if (_wipeConfirm.Trim() != "forget")
+            return;
+
+        await MemoryService.WipeAsync();
+        _wipeConfirm = "";
+        _wiped = "Memory wiped; extraction starts over.";
+    }
+}

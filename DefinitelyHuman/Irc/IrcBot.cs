@@ -31,6 +31,9 @@ public class IrcBot : IDisposable
     /// <summary>The set of channels the bot is in changed (joined, left, kicked, or disconnected).</summary>
     public event Action? ChannelsChanged;
 
+    /// <summary>Someone changed nick. Arguments: the old nick and the new one.</summary>
+    public event Action<string, string>? NickChanged;
+
     // Channels the bot is in right now, as the server tells it. With a bouncer this includes the
     // ones the bouncer rejoins for us on connect.
     private readonly HashSet<string> _joined = new(StringComparer.OrdinalIgnoreCase);
@@ -106,6 +109,12 @@ public class IrcBot : IDisposable
             string? channel = message.Parameters.FirstOrDefault();
             if (channel is null)
                 return;
+
+            if (message.Command == "NICK" && message.Prefix?.From is { } oldNick)
+            {
+                NickChanged?.Invoke(oldNick, channel);
+                return;
+            }
 
             bool changed;
             lock (_joined)

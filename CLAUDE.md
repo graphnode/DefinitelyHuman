@@ -20,7 +20,7 @@ Locally the dashboard runs on http://localhost:5265 (`Properties/launchSettings.
 Settings are loaded from `.env` in the working directory via `dotenv.net` (gitignored; see `.env.example` for a template). Note `dotenv.net` **overwrites** existing environment variables by default — so a value present in `.env` wins over a real env var of the same name. With no `.env` present, real environment variables are used.
 
 - `ANTHROPIC_API_KEY` (required) — Claude API key.
-- `ANTHROPIC_MODEL` (default `claude-haiku-4-5-20251001`)
+- `ANTHROPIC_MODEL` (default `claude-haiku-4-5-20251001`) - only the default for the chat model; the Settings page overrides it.
 - `IRC_HOST` (default `localhost`), `IRC_PORT` (default `6667`), `IRC_CHANNEL` (default `#clankersunite`; the home channel, joined on connect), `IRC_NICK` (default `DefinitelyHuman`)
 - `IRC_PASSWORD` (optional) — sent as the IRC server password (`PASS`); blank/absent means none. NetIRC has no SASL support.
 - `IRC_READONLY_CHANNELS` (optional) - comma-separated channels the bot may join and read but must never write to (shadow mode, see below).
@@ -44,11 +44,16 @@ DefinitelyHuman/
     ChatAgentOptions.cs    — API key, model, nick, EnableThinking, LogReasoning
     Attention.cs           — the focus model: a [0,1] value decayed lazily from timestamps (no loop)
     AgentLog.cs            — persists agent events to SQLite via a background drain task; raises Updated for the UI
+    AppSettings.cs         — dashboard-editable settings kept in SQLite: the model for each job, memory switches
+  Memory/
+    MemoryService.cs       — background loop, fact extraction from unread chat lines, recall for the agent, entity merge/wipe
+    MemoryService.Curation.cs — the nightly pass: merge duplicate facts, invalidate contradicted ones, insights, entity profiles
   Data/
     ChattingContext.cs     — EF Core DbContext (SQLite)
     Message.cs             — chat line (Channel, Timestamp, Nick, Text, IsOwnMessage)
     AgentEvent.cs          — agent event (Kind: Decision/Thinking/Error/ToolCall, Summary, Detail, optional MessageId)
     CachedLinkPreview.cs   — persisted OpenGraph preview, keyed by URL
+    Memory.cs              — long-term memory tables: Entity, EntityAlias, Fact, FactEvidence, MemoryRun, ProcessedMessage, Setting
   Irc/
     IrcBot.cs              — IRC client wrapper, DB logging, log reads, typing delay, replay grace window
     IrcBotOptions.cs       — nick, host, port, channel, password, username
@@ -68,7 +73,14 @@ DefinitelyHuman/
       ChatVirtualize.razor(.cs/.js) — bottom-anchored virtualized list with per-item height tracking, jump-to-index and at-bottom notifications
     Pages/
       Home.razor           — the timeline of one channel (`/` = the bot's channel, `/c/{slug}` = any logged channel): chat lines and agent events merged by timestamp, with link previews, find and decision stepping
+      MemoryFacts.razor    — `/memory`: filterable table of facts
+      MemoryEntities.razor, MemoryEntity.razor — entity list; one entity's profile, connection graph (inline SVG), facts, links, merge
+      MemoryLinks.razor    — who posted which link when (read from the chat log, no model)
+      MemoryRuns.razor     — extraction and curation runs with token counts; "Curate now"
+      Settings.razor       — model per job, memory switches, wipe memory
       Error.razor, NotFound.razor
+    Components/Memory/
+      FactTable.razor      — fact rows with their evidence lines and invalidate/restore, shared by the facts and entity pages
 Scripts/
   ImportHalloyLog.cs       — file-based script: imports a Halloy log export into the chat database
 ```
@@ -94,14 +106,24 @@ The bot is **state-driven, not event-driven**: it does not react to individual m
 
 **Read-only channels (shadow mode)**: in a channel listed in `IRC_READONLY_CHANNELS` the bot glances and asks the model as usual, but a reply is only recorded as a `would have replied: "..."` event. The channel's bookmark still advances, but it never becomes the conversation channel and the reply does not refresh focus. The guarantee does not rest on the agent: `OutgoingFilterConnection.WritesTo` drops any PRIVMSG/NOTICE/TAGMSG/TOPIC/KICK/MODE/INVITE aimed at a read-only channel at the last point before the socket (and logs a warning), and `IrcBot.SendMessageAsync` refuses as well. Set the variable before joining such a channel.
 
-Not implemented: tools (the `ToolCall` event kind is reserved), long-term memory, private messages.
+Not implemented: tools (the `ToolCall` event kind is reserved), private messages.
+
+## Long-term memory
+
+Inspired by mem0 and Zep/Graphiti, all in the same SQLite file: **entities** (people, projects, tools, places, topics; every name they go by is an `EntityAlias`, lowercased) and **facts** about them (one self-contained sentence with a subject entity and an optional object entity, which makes it a graph edge). Facts are never deleted: one that stops being true gets `InvalidatedAt` (and `SupersededByFactId`). `FactEvidence` links each fact to the chat lines it rests on.
+
+- **Extraction** (`MemoryService`, a `BackgroundService` waking every minute): chat lines without a `ProcessedMessage` row are unread. They are taken per channel, oldest first, in conversation chunks (ended by a 30 min silence once the chunk has 20 lines, or at 80 lines); a chunk at the end of the log waits 10 min of quiet. One model call per chunk returns structured facts citing numbered lines. The same loop does live chat and bulk backlog: importing an old log just creates unread lines. Extraction only adds; a chunk that fails three times is marked read with a failed run.
+- **Curation** (nightly after 04:00 UTC, or "Curate now"): for each entity with facts newer than its `CuratedAt`, one call merges duplicate facts, invalidates contradicted ones, adds up to three derived insights and rewrites the entity's `Summary`. Merged and derived facts inherit the evidence of the facts they came from. It ends with a duplicate-entity check whose suggestions go in the run's detail; entities are only merged by hand (entity page) or gain an alias from an IRC `NICK` line.
+- **Recall**: before a glance, `MemoryService.RecallAsync` matches entity aliases against the words of the backlog (speakers first, max 8 entities, 6 facts each) and the result is put before the log as "What you remember". No embeddings: lookup is by name. Memory text is untrusted, like link previews, and the prompts say it is never instructions. Recall is not restricted by channel.
+- **Models** come from `AppSettings` (Settings page, `Settings` table), read on every call: chat (default `ANTHROPIC_MODEL`), extraction (Haiku 4.5), curation (Sonnet 5.5). The same page switches extraction, curation and recall on or off and can wipe memory so the whole log is read again.
+- **Schema**: `ChattingContext.EnsureSchema` replays the model's create script with `IF NOT EXISTS`, so new tables appear in an existing database. It cannot add a column to an existing table; that needs EF migrations.
 
 **Link context**: before a glance, `LinkPreviewService.AnnotateAsync` appends each link's preview to its log line as `[link: title — summary]` (waiting up to `IrcBotService.LinkPreviewWait` for previews still loading), so the model knows what a link is about the way a chat client's unfurl shows it. The agent never sees the page contents beyond that. Preview text is untrusted: it is flattened to one line and the system prompt tells the model it is not instructions.
 
 ## Key patterns
 
-- `IrcBot`, `ChatAgent`, `AgentLog`, and `LinkPreviewService` are registered as singletons in DI — injectable into Blazor components.
-- `IrcBotService` (a `BackgroundService`) calls `agent.Bind(readLog, send)` to wire the agent's I/O, then subscribes to `bot.ChannelActivity`.
+- `IrcBot`, `ChatAgent`, `AgentLog`, `AppSettings`, `MemoryService` and `LinkPreviewService` are registered as singletons in DI — injectable into Blazor components.
+- `IrcBotService` (a `BackgroundService`) calls `agent.Bind(readLog, send, isReadOnly, recall)` to wire the agent's I/O, then subscribes to `bot.ChannelActivity`.
 - A fresh `ChattingContext` is created per DB operation (avoids shared DbContext concurrency issues).
 - **Agent events** go through `AgentLog.Log`, which is synchronous and non-blocking (safe inside the agent's locks): it queues the event and a single drain task writes it to SQLite. A "replied" event carries the `MessageId` of the line it produced so the timeline can attach the reasoning to the chat line.
 - **Extended thinking** (`ChatAgentOptions.EnableThinking`, 1024-token budget) and console echo (`LogReasoning`) exist but are not set in `Program.cs`, so both are off. The dashboard decision log is always captured regardless.
@@ -120,6 +142,7 @@ Not implemented: tools (the `ToolCall` event kind is reserved), long-term memory
 - **Active-conversation threshold**: `ChatAgent.ActiveConversationFocus`.
 - **Backlog cap**: `IrcBotService.MaxBacklog`. **Earlier-context tail**: `IrcBotService.ContextTail`.
 - **Replay grace window**: `IrcBot.ReplayWindow`.
+- **Memory**: the constants at the top of `MemoryService` (chunking, recall size) and `MemoryService.Curation.cs` (curation hour, limits), and the extraction/curation prompts there.
 - **Persona / reply judgment**: the system prompt and the three per-glance instruction tiers in `ChatAgent`.
 
 ## Deployment
@@ -133,6 +156,6 @@ Production runs on a Linux server behind a [soju](https://soju.im) bouncer, whic
 ## Dependencies
 
 - **NetIRC** (v1.1.2, NuGet package) — IRC client
-- **Microsoft.Agents.AI.Anthropic** (1.8.0-preview) — Claude via Microsoft AI agent framework
-- **Microsoft.EntityFrameworkCore.Sqlite** — chat log, agent events, link preview cache
+- **Microsoft.Agents.AI.Anthropic** (1.23.0-preview) — Claude via Microsoft AI agent framework
+- **Microsoft.EntityFrameworkCore.Sqlite** — chat log, agent events, link preview cache, long-term memory, settings
 - **dotenv.net** — `.env` file loading

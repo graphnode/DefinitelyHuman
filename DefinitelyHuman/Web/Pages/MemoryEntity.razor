@@ -1,0 +1,159 @@
+@page "/memory/entities/{Id:int}"
+@rendermode InteractiveServer
+
+@using System.Globalization
+@using DefinitelyHuman.Data
+@using DefinitelyHuman.Memory
+@using DefinitelyHuman.Web.Components.Memory
+@using Microsoft.EntityFrameworkCore
+@using LinkPreviewService = DefinitelyHuman.Utilities.LinkPreviewService
+
+@inject MemoryService MemoryService
+@inject NavigationManager Nav
+
+@if (_entity is null)
+{
+    <div class="page-header"><h2>Entity</h2></div>
+    <div class="page-body mem-page"><p class="mem-empty">There is no such entity. It may have been merged into another.</p></div>
+}
+else
+{
+    <div class="page-header">
+        <h2>@_entity.Name</h2>
+        <span class="tl-where">@_entity.Type@(_aliases.Count > 0 ? ", also known as " + string.Join(", ", _aliases) : "")</span>
+    </div>
+
+    <div class="page-body mem-page">
+        <p class="mem-summary">@(_entity.Summary ?? "No profile yet; the curation pass writes one once there are a few facts.")</p>
+
+        @if (_neighbours.Count > 0)
+        {
+            <h3>Connections</h3>
+            @* Radial layout: this entity in the middle, what its facts link it to around it. *@
+            <svg class="mem-graph" viewBox="0 0 720 380" role="img" aria-label="@($"What {_entity.Name} is connected to")">
+                @for (int i = 0; i < _neighbours.Count; i++)
+                {
+                    var (x, y) = Position(i, _neighbours.Count);
+                    <line x1="360" y1="190" x2="@F(x)" y2="@F(y)" stroke-width="@Math.Min(4, _neighbours[i].Count)" />
+                }
+                <circle class="mem-graph-self" cx="360" cy="190" r="9" />
+                <text class="mem-graph-self" x="360" y="172" text-anchor="middle">@_entity.Name</text>
+                @for (int i = 0; i < _neighbours.Count; i++)
+                {
+                    var n = _neighbours[i];
+                    var (x, y) = Position(i, _neighbours.Count);
+                    <a href="memory/entities/@n.EntityId">
+                        <title>@n.Sample</title>
+                        <circle class="mem-graph-@n.Type" cx="@F(x)" cy="@F(y)" r="6" />
+                        <text x="@F(x)" y="@F(y + (y < 190 ? -11 : 19))" text-anchor="middle">@n.Name</text>
+                    </a>
+                }
+            </svg>
+        }
+
+        <h3>Facts</h3>
+        <label class="mem-check"><input type="checkbox" @bind="_showInvalidated" @bind:after="Load" /> Include invalidated</label>
+        <FactTable Facts="_facts" Changed="Load" />
+
+        @if (_links.Count > 0)
+        {
+            <h3>Links shared</h3>
+            <table class="mem-table">
+                <tbody>
+                    @foreach (var link in _links)
+                    {
+                        <tr>
+                            <td class="mem-nowrap">@link.At.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</td>
+                            <td><a href="@link.Url" target="_blank" rel="noopener">@link.Url</a></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+
+        <h3>Merge</h3>
+        <form class="mem-filters" @onsubmit="Merge">
+            <span>Fold this entity into</span>
+            <select aria-label="Entity to merge into" @bind="_mergeInto">
+                <option value="0">choose an entity</option>
+                @foreach (var other in _others)
+                {
+                    <option value="@other.EntityId">@other.Name (@other.Type)</option>
+                }
+            </select>
+            <label class="mem-check"><input type="checkbox" @bind="_mergeConfirmed" /> they are the same; this can't be undone</label>
+            <button type="submit" disabled="@(_mergeInto == 0 || !_mergeConfirmed)">Merge</button>
+        </form>
+    </div>
+}
+
+@code {
+    private const int MaxNeighbours = 20;
+
+    private sealed record Neighbour(int EntityId, string Name, string Type, int Count, string Sample);
+    private sealed record Link(DateTime At, string Url);
+
+    [Parameter] public int Id { get; set; }
+
+    private Entity? _entity;
+    private List<string> _aliases = [];
+    private List<FactTable.FactRow> _facts = [];
+    private List<Neighbour> _neighbours = [];
+    private List<Link> _links = [];
+    private List<Entity> _others = [];
+    private bool _showInvalidated;
+    private int _mergeInto;
+    private bool _mergeConfirmed;
+
+    protected override Task OnParametersSetAsync() => Load();
+
+    private async Task Load()
+    {
+        await using var db = new ChattingContext();
+        _entity = await db.Entities.FindAsync(Id);
+        if (_entity is null)
+            return;
+
+        string ownName = _entity.Name.ToLowerInvariant();
+        var aliases = await db.EntityAliases.Where(a => a.EntityId == Id).Select(a => a.Alias).ToListAsync();
+        _aliases = aliases.Where(a => a != ownName).ToList();
+
+        var about = db.Facts.Where(f => f.SubjectEntityId == Id || f.ObjectEntityId == Id);
+        _facts = await FactTable.LoadAsync(db, _showInvalidated ? about : about.Where(f => f.InvalidatedAt == null), 500);
+
+        _others = await db.Entities.Where(e => e.EntityId != Id).OrderBy(e => e.Name).ToListAsync();
+        var byId = _others.ToDictionary(e => e.EntityId);
+        _neighbours = _facts
+            .Where(r => r.Fact.InvalidatedAt is null && r.Fact.ObjectEntityId is not null)
+            .GroupBy(r => r.Fact.SubjectEntityId == Id ? r.Fact.ObjectEntityId!.Value : r.Fact.SubjectEntityId)
+            .Where(g => byId.ContainsKey(g.Key))
+            .Select(g => new Neighbour(g.Key, byId[g.Key].Name, byId[g.Key].Type, g.Count(), string.Join("\n", g.Select(r => r.Fact.Text).Take(5))))
+            .OrderByDescending(n => n.Count).Take(MaxNeighbours).ToList();
+
+        // What this person posted: every URL in lines said under any of their names.
+        var lines = await db.Messages
+            .Where(m => aliases.Contains(m.Nick.ToLower()) && m.Text.Contains("http"))
+            .OrderByDescending(m => m.Timestamp).Take(200).ToListAsync();
+        _links = lines
+            .SelectMany(m => LinkPreviewService.ExtractUrls(m.Text).Select(u => new Link(m.Timestamp, LinkPreviewService.CleanUrl(u.Value))))
+            .ToList();
+    }
+
+    private async Task Merge()
+    {
+        if (_mergeInto == 0 || !_mergeConfirmed)
+            return;
+
+        await MemoryService.MergeEntitiesAsync(Id, _mergeInto);
+        Nav.NavigateTo($"memory/entities/{_mergeInto}");
+    }
+
+    // Neighbours sit on an ellipse around the centre, starting at the top.
+    private static (double X, double Y) Position(int index, int count)
+    {
+        double angle = 2 * Math.PI * index / count - Math.PI / 2;
+        return (360 + 270 * Math.Cos(angle), 190 + 140 * Math.Sin(angle));
+    }
+
+    private static string F(double value) => value.ToString("F1", CultureInfo.InvariantCulture);
+}

@@ -1,9 +1,10 @@
 using DefinitelyHuman.Agent;
+using DefinitelyHuman.Memory;
 using DefinitelyHuman.Utilities;
 
 namespace DefinitelyHuman.Irc;
 
-public class IrcBotService(IrcBot bot, ChatAgent agent, LinkPreviewService previews) : BackgroundService
+public class IrcBotService(IrcBot bot, ChatAgent agent, LinkPreviewService previews, MemoryService memory) : BackgroundService
 {
     // How long a glance waits for the previews of links it hasn't seen yet.
     private static readonly TimeSpan LinkPreviewWait = TimeSpan.FromSeconds(5);
@@ -22,7 +23,11 @@ public class IrcBotService(IrcBot bot, ChatAgent agent, LinkPreviewService previ
             readLog: async (channel, since) => await previews.AnnotateAsync(
                 await bot.ReadLogSinceAsync(channel, since, MaxBacklog, ContextTail), LinkPreviewWait),
             send: bot.SendMessageAsync,
-            isReadOnly: bot.IsReadOnly);
+            isReadOnly: bot.IsReadOnly,
+            recall: memory.RecallAsync);
+
+        // A nick change is proof that two names are one person, so memory keeps both.
+        bot.NickChanged += (oldNick, newNick) => _ = memory.AddAliasAsync(oldNick, newNick);
 
         // The bot doesn't get handed messages — just a nudge that the log changed (plus the
         // line itself, for the decision log).

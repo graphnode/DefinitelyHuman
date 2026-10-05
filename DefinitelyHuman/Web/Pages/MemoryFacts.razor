@@ -1,0 +1,84 @@
+@page "/memory"
+@rendermode InteractiveServer
+
+@using DefinitelyHuman.Data
+@using DefinitelyHuman.Memory
+@using DefinitelyHuman.Web.Components.Memory
+@using Microsoft.EntityFrameworkCore
+
+@inject MemoryService MemoryService
+
+@implements IDisposable
+
+<div class="page-header">
+    <h2>Facts</h2>
+    <span class="tl-where">@_current current, @_invalidated invalidated, @_unread chat lines not read yet</span>
+    <span class="mem-status" role="status">Memory: @MemoryService.Status</span>
+</div>
+
+<div class="page-body mem-page">
+    <div class="mem-filters">
+        <input type="search" placeholder="Search facts" aria-label="Search facts" @bind="_search" @bind:event="oninput" @bind:after="Load" />
+        <select aria-label="Status" @bind="_status" @bind:after="Load">
+            <option value="current">Current</option>
+            <option value="invalidated">Invalidated</option>
+            <option value="all">All</option>
+        </select>
+        <select aria-label="Source" @bind="_source" @bind:after="Load">
+            <option value="">Any source</option>
+            <option value="@FactSource.Extracted">Extracted</option>
+            <option value="@FactSource.Merged">Merged</option>
+            <option value="@FactSource.Derived">Derived</option>
+        </select>
+        @if (_facts.Count == MaxRows)
+        {
+            <span class="mem-note">Showing the newest @MaxRows; search to narrow down.</span>
+        }
+    </div>
+
+    <FactTable Facts="_facts" Changed="Load" />
+</div>
+
+@code {
+    private const int MaxRows = 300;
+
+    private List<FactTable.FactRow> _facts = [];
+    private string _search = "";
+    private string _status = "current";
+    private string _source = "";
+    private int _current, _invalidated, _unread;
+
+    protected override async Task OnInitializedAsync()
+    {
+        MemoryService.Updated += OnUpdated;
+        await Load();
+    }
+
+    private void OnUpdated() => _ = InvokeAsync(async () =>
+    {
+        await Load();
+        StateHasChanged();
+    });
+
+    private async Task Load()
+    {
+        await using var db = new ChattingContext();
+        _current = await db.Facts.CountAsync(f => f.InvalidatedAt == null);
+        _invalidated = await db.Facts.CountAsync(f => f.InvalidatedAt != null);
+        _unread = await db.Messages.CountAsync(m => !db.ProcessedMessages.Any(p => p.MessageId == m.MessageId));
+
+        IQueryable<Fact> query = db.Facts;
+        if (_status == "current")
+            query = query.Where(f => f.InvalidatedAt == null);
+        else if (_status == "invalidated")
+            query = query.Where(f => f.InvalidatedAt != null);
+        if (Enum.TryParse(_source, out FactSource source))
+            query = query.Where(f => f.Source == source);
+        if (_search.Trim() is { Length: > 0 } search)
+            query = query.Where(f => f.Text.Contains(search));
+
+        _facts = await FactTable.LoadAsync(db, query, MaxRows);
+    }
+
+    public void Dispose() => MemoryService.Updated -= OnUpdated;
+}

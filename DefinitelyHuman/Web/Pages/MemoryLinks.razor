@@ -1,0 +1,97 @@
+@page "/memory/links"
+@rendermode InteractiveServer
+
+@using DefinitelyHuman.Data
+@using Microsoft.EntityFrameworkCore
+@using LinkPreviewService = DefinitelyHuman.Utilities.LinkPreviewService
+
+@* Who posted which link, when. Read straight from the chat log, so it needs no model and is
+   exact; titles come from the link previews already cached. *@
+<div class="page-header">
+    <h2>Links</h2>
+    <span class="tl-where">@_rows.Count shown</span>
+</div>
+
+<div class="page-body mem-page">
+    <div class="mem-filters">
+        <input type="search" placeholder="Search by nick, URL or text" aria-label="Search links" @bind="_search" @bind:event="oninput" @bind:after="Load" />
+        @if (_rows.Count >= MaxRows)
+        {
+            <span class="mem-note">Showing the newest @MaxRows; search to narrow down.</span>
+        }
+    </div>
+
+    @if (_rows.Count == 0)
+    {
+        <p class="mem-empty">No links.</p>
+    }
+    else
+    {
+        <table class="mem-table">
+            <thead>
+                <tr><th>When</th><th>Channel</th><th>Who</th><th>Link</th><th>Said with it</th></tr>
+            </thead>
+            <tbody>
+                @foreach (var row in _rows)
+                {
+                    <tr>
+                        <td class="mem-nowrap">@row.At.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</td>
+                        <td class="mem-nowrap">@row.Channel</td>
+                        <td class="mem-nowrap">
+                            @if (row.EntityId is { } entityId)
+                            {
+                                <a href="memory/entities/@entityId">@row.Nick</a>
+                            }
+                            else
+                            {
+                                @row.Nick
+                            }
+                        </td>
+                        <td>
+                            <a href="@row.Url" target="_blank" rel="noopener">@(row.Title ?? row.Url)</a>
+                            @if (row.Title is not null)
+                            {
+                                <div class="mem-note">@row.Url</div>
+                            }
+                        </td>
+                        <td>@row.Text</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</div>
+
+@code {
+    private const int MaxRows = 500;
+
+    private sealed record Row(DateTime At, string Channel, string Nick, int? EntityId, string Url, string? Title, string Text);
+
+    private List<Row> _rows = [];
+    private string _search = "";
+
+    protected override Task OnInitializedAsync() => Load();
+
+    private async Task Load()
+    {
+        await using var db = new ChattingContext();
+        var query = db.Messages.Where(m => m.Text.Contains("http"));
+        if (_search.Trim() is { Length: > 0 } search)
+            query = query.Where(m => m.Text.Contains(search) || m.Nick.Contains(search));
+        var lines = await query.OrderByDescending(m => m.Timestamp).Take(MaxRows).ToListAsync();
+
+        var links = lines
+            .SelectMany(m => LinkPreviewService.ExtractUrls(m.Text).Select(u => (Line: m, Url: LinkPreviewService.CleanUrl(u.Value))))
+            .ToList();
+
+        var urls = links.Select(l => l.Url).Distinct().ToList();
+        var titles = await db.CachedLinkPreviews.Where(p => urls.Contains(p.Url) && p.Title != null)
+            .ToDictionaryAsync(p => p.Url, p => p.Title);
+        var people = await db.EntityAliases.ToDictionaryAsync(a => a.Alias, a => a.EntityId);
+
+        _rows = links.Select(l => new Row(l.Line.Timestamp, l.Line.Channel, l.Line.Nick,
+            people.TryGetValue(l.Line.Nick.ToLowerInvariant(), out int id) ? id : null,
+            l.Url, titles.GetValueOrDefault(l.Url),
+            l.Line.Text.Replace(l.Url, "").Trim())).ToList();
+    }
+}

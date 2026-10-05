@@ -1,6 +1,7 @@
 using DefinitelyHuman.Agent;
 using DefinitelyHuman.Data;
 using DefinitelyHuman.Irc;
+using DefinitelyHuman.Memory;
 using DefinitelyHuman.Web;
 using dotenv.net;
 using LinkPreviewService = DefinitelyHuman.Utilities.LinkPreviewService;
@@ -8,7 +9,7 @@ using LinkPreviewService = DefinitelyHuman.Utilities.LinkPreviewService;
 DotEnv.Load();
 
 await using var db = new ChattingContext();
-db.Database.EnsureCreated();
+db.EnsureSchema();
 
 var ircBotOptions = new IrcBotOptions
 {
@@ -52,7 +53,15 @@ builder.Services.AddSingleton<AgentLog>();
 // enableThinking costs extra (output) tokens on every glance — flip on for better answers,
 // off to save tokens. logReasoning only echoes the decision log + thinking to the console;
 // the dashboard log is captured regardless.
-builder.Services.AddSingleton<ChatAgent>(sp => new ChatAgent(chatAgentOptions, sp.GetRequiredService<AgentLog>(), sp.GetRequiredService<ILogger<ChatAgent>>()));
+// Which model each job uses, and which memory jobs run; editable on the Settings page.
+builder.Services.AddSingleton(new AppSettings(chatAgentOptions.Model));
+
+builder.Services.AddSingleton<ChatAgent>(sp => new ChatAgent(chatAgentOptions, sp.GetRequiredService<AppSettings>(), sp.GetRequiredService<AgentLog>(), sp.GetRequiredService<ILogger<ChatAgent>>()));
+
+// Long-term memory: extracts facts from the log in the background, curates them nightly, and
+// recalls them for the agent. A singleton that is also the hosted service, so pages can inject it.
+builder.Services.AddSingleton<MemoryService>(sp => new MemoryService(chatAgentOptions, sp.GetRequiredService<AppSettings>(), sp.GetRequiredService<ILogger<MemoryService>>()));
+builder.Services.AddHostedService(sp => sp.GetRequiredService<MemoryService>());
 builder.Services.AddSingleton<IrcBot>(sp => new IrcBot(ircBotOptions, sp.GetRequiredService<ILogger<IrcBot>>()));
 
 builder.Services.AddSingleton<LinkPreviewService>();

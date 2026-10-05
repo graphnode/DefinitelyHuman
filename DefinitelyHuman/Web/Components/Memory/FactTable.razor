@@ -1,0 +1,108 @@
+@using DefinitelyHuman.Data
+@using Microsoft.EntityFrameworkCore
+
+@* A table of facts, shared by the Facts page and an entity's page. Each row can show the chat
+   lines the fact rests on, and be invalidated or restored by hand. *@
+@if (Facts.Count == 0)
+{
+    <p class="mem-empty">No facts.</p>
+}
+else
+{
+    <table class="mem-table">
+        <thead>
+            <tr><th>Said</th><th>About</th><th>Fact</th><th>Source</th><th></th></tr>
+        </thead>
+        <tbody>
+            @foreach (var row in Facts)
+            {
+                var fact = row.Fact;
+                <tr class="@(fact.InvalidatedAt is null ? null : "mem-invalid")">
+                    <td class="mem-nowrap" title="Recorded @fact.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm") in @fact.Channel">
+                        @fact.ValidFrom.ToLocalTime().ToString("yyyy-MM-dd")
+                    </td>
+                    <td class="mem-nowrap">
+                        <a href="memory/entities/@fact.SubjectEntityId">@row.Subject</a>
+                        @if (fact.ObjectEntityId is { } objectId)
+                        {
+                            <span class="mem-arrow" aria-label="linked to">&rarr;</span>
+                            <a href="memory/entities/@objectId">@row.Object</a>
+                        }
+                    </td>
+                    <td>
+                        <span class="mem-id">#@fact.FactId</span> @fact.Text
+                        @if (fact.InvalidatedAt is { } invalidatedAt)
+                        {
+                            <div class="mem-note">
+                                Invalidated @invalidatedAt.ToLocalTime().ToString("yyyy-MM-dd")@(fact.SupersededByFactId is { } by ? $", replaced by #{by}" : "")
+                            </div>
+                        }
+                        @if (_evidence.TryGetValue(fact.FactId, out var lines))
+                        {
+                            <div class="mem-evidence">
+                                @foreach (var line in lines)
+                                {
+                                    <div><span class="mem-note">@line.Timestamp.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</span> &lt;@line.Nick&gt; @line.Text</div>
+                                }
+                                @if (lines.Count == 0)
+                                {
+                                    <div class="mem-note">No chat lines recorded for this fact.</div>
+                                }
+                            </div>
+                        }
+                    </td>
+                    <td class="mem-nowrap">@fact.Source.ToString().ToLowerInvariant()</td>
+                    <td class="mem-nowrap mem-actions">
+                        <button type="button" @onclick="() => ToggleEvidence(fact.FactId)">@(_evidence.ContainsKey(fact.FactId) ? "Hide lines" : "Lines")</button>
+                        <button type="button" @onclick="() => SetInvalid(fact.FactId, fact.InvalidatedAt is null)">@(fact.InvalidatedAt is null ? "Invalidate" : "Restore")</button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    public sealed record FactRow(Fact Fact, string Subject, string? Object);
+
+    [Parameter, EditorRequired] public IReadOnlyList<FactRow> Facts { get; set; } = [];
+
+    /// <summary>Raised after a fact was invalidated or restored, so the page can reload.</summary>
+    [Parameter] public EventCallback Changed { get; set; }
+
+    private readonly Dictionary<int, List<Message>> _evidence = [];
+
+    /// <summary>Loads the newest <paramref name="take"/> facts of a query, with the names of the entities they mention.</summary>
+    public static async Task<List<FactRow>> LoadAsync(ChattingContext db, IQueryable<Fact> facts, int take)
+    {
+        var list = await facts.OrderByDescending(f => f.ValidFrom).ThenByDescending(f => f.FactId).Take(take).ToListAsync();
+        var ids = list.SelectMany(f => new[] { f.SubjectEntityId, f.ObjectEntityId ?? 0 }).Distinct().ToList();
+        var names = await db.Entities.Where(e => ids.Contains(e.EntityId)).ToDictionaryAsync(e => e.EntityId, e => e.Name);
+        return list.Select(f => new FactRow(f, names.GetValueOrDefault(f.SubjectEntityId, "?"),
+            f.ObjectEntityId is { } o ? names.GetValueOrDefault(o, "?") : null)).ToList();
+    }
+
+    private async Task ToggleEvidence(int factId)
+    {
+        if (_evidence.Remove(factId))
+            return;
+
+        await using var db = new ChattingContext();
+        _evidence[factId] = await db.Messages
+            .Where(m => db.FactEvidence.Any(e => e.FactId == factId && e.MessageId == m.MessageId))
+            .OrderBy(m => m.Timestamp).ToListAsync();
+    }
+
+    private async Task SetInvalid(int factId, bool invalid)
+    {
+        await using var db = new ChattingContext();
+        if (await db.Facts.FindAsync(factId) is { } fact)
+        {
+            fact.InvalidatedAt = invalid ? DateTime.UtcNow : null;
+            if (!invalid)
+                fact.SupersededByFactId = null;
+            await db.SaveChangesAsync();
+        }
+        await Changed.InvokeAsync();
+    }
+}

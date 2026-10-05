@@ -1,0 +1,84 @@
+@page "/memory/runs"
+@rendermode InteractiveServer
+
+@using DefinitelyHuman.Data
+@using DefinitelyHuman.Memory
+@using Microsoft.EntityFrameworkCore
+
+@inject MemoryService MemoryService
+
+@implements IDisposable
+
+<div class="page-header">
+    <h2>Memory runs</h2>
+    <span class="tl-where">@_inputTokens.ToString("N0") tokens in, @_outputTokens.ToString("N0") out, over all runs</span>
+    <span class="mem-status" role="status">Memory: @MemoryService.Status</span>
+    <button type="button" class="mem-button" @onclick="MemoryService.RequestCuration">Curate now</button>
+</div>
+
+<div class="page-body mem-page">
+    @if (_runs.Count == 0)
+    {
+        <p class="mem-empty">No runs yet.</p>
+    }
+    else
+    {
+        <table class="mem-table">
+            <thead>
+                <tr><th>Started</th><th>Kind</th><th>Channel</th><th>Model</th><th>Tokens in / out</th><th>Result</th></tr>
+            </thead>
+            <tbody>
+                @foreach (var run in _runs)
+                {
+                    <tr class="@(run.Failed ? "mem-failed" : null)">
+                        <td class="mem-nowrap">@run.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</td>
+                        <td>@run.Kind.ToString().ToLowerInvariant()</td>
+                        <td class="mem-nowrap">@run.Channel</td>
+                        <td class="mem-nowrap">@run.Model</td>
+                        <td class="mem-nowrap">@run.InputTokens.ToString("N0") / @run.OutputTokens.ToString("N0")</td>
+                        <td>
+                            @if (string.IsNullOrEmpty(run.Detail))
+                            {
+                                @run.Summary
+                            }
+                            else
+                            {
+                                <details>
+                                    <summary>@run.Summary</summary>
+                                    <pre class="mem-pre">@run.Detail</pre>
+                                </details>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</div>
+
+@code {
+    private List<MemoryRun> _runs = [];
+    private long _inputTokens, _outputTokens;
+
+    protected override async Task OnInitializedAsync()
+    {
+        MemoryService.Updated += OnUpdated;
+        await Load();
+    }
+
+    private void OnUpdated() => _ = InvokeAsync(async () =>
+    {
+        await Load();
+        StateHasChanged();
+    });
+
+    private async Task Load()
+    {
+        await using var db = new ChattingContext();
+        _runs = await db.MemoryRuns.OrderByDescending(r => r.MemoryRunId).Take(200).ToListAsync();
+        _inputTokens = await db.MemoryRuns.SumAsync(r => r.InputTokens);
+        _outputTokens = await db.MemoryRuns.SumAsync(r => r.OutputTokens);
+    }
+
+    public void Dispose() => MemoryService.Updated -= OnUpdated;
+}

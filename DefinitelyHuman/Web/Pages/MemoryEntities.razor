@@ -1,0 +1,83 @@
+@page "/memory/entities"
+@rendermode InteractiveServer
+
+@using DefinitelyHuman.Data
+@using Microsoft.EntityFrameworkCore
+
+<div class="page-header">
+    <h2>Entities</h2>
+    <span class="tl-where">@_rows.Count shown</span>
+</div>
+
+<div class="page-body mem-page">
+    <div class="mem-filters">
+        <input type="search" placeholder="Search names" aria-label="Search names" @bind="_search" @bind:event="oninput" @bind:after="Load" />
+        <select aria-label="Type" @bind="_type" @bind:after="Load">
+            <option value="">Any type</option>
+            @foreach (string type in Types)
+            {
+                <option value="@type">@type</option>
+            }
+        </select>
+    </div>
+
+    @if (_rows.Count == 0)
+    {
+        <p class="mem-empty">No entities.</p>
+    }
+    else
+    {
+        <table class="mem-table">
+            <thead>
+                <tr><th>Name</th><th>Type</th><th>Facts</th><th>Also known as</th><th>Profile</th></tr>
+            </thead>
+            <tbody>
+                @foreach (var row in _rows)
+                {
+                    <tr>
+                        <td class="mem-nowrap"><a href="memory/entities/@row.Entity.EntityId">@row.Entity.Name</a></td>
+                        <td>@row.Entity.Type</td>
+                        <td>@row.Facts</td>
+                        <td>@row.Aliases</td>
+                        <td>@row.Entity.Summary</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</div>
+
+@code {
+    private static readonly string[] Types = ["person", "project", "tool", "place", "topic", "other"];
+
+    private sealed record Row(Entity Entity, int Facts, string Aliases);
+
+    private List<Row> _rows = [];
+    private string _search = "";
+    private string _type = "";
+
+    protected override Task OnInitializedAsync() => Load();
+
+    private async Task Load()
+    {
+        await using var db = new ChattingContext();
+        IQueryable<Entity> query = db.Entities;
+        if (_type.Length > 0)
+            query = query.Where(e => e.Type == _type);
+        if (_search.Trim().ToLowerInvariant() is { Length: > 0 } search)
+            query = query.Where(e => db.EntityAliases.Any(a => a.EntityId == e.EntityId && a.Alias.Contains(search)));
+
+        var entities = await query.ToListAsync();
+        var counts = await db.Facts.Where(f => f.InvalidatedAt == null)
+            .GroupBy(f => f.SubjectEntityId).Select(g => new { g.Key, Count = g.Count() })
+            .ToDictionaryAsync(g => g.Key, g => g.Count);
+        var aliases = (await db.EntityAliases.ToListAsync()).ToLookup(a => a.EntityId, a => a.Alias);
+
+        // The ones the bot knows most about first.
+        _rows = entities
+            .Select(e => new Row(e, counts.GetValueOrDefault(e.EntityId),
+                string.Join(", ", aliases[e.EntityId].Where(a => a != e.Name.ToLowerInvariant()))))
+            .OrderByDescending(r => r.Facts).ThenBy(r => r.Entity.Name)
+            .ToList();
+    }
+}

@@ -673,6 +673,223 @@ body {
     color: var(--text-muted);
 }
 
+/* Memory and settings pages: plain tables and forms */
+.sidebar-nav {
+    overflow-y: auto;
+}
+
+.mem-page {
+    padding: 1rem 1.5rem 2rem;
+}
+
+.mem-page h3 {
+    margin: 1.5rem 0 0.5rem;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+}
+
+.mem-page a {
+    color: var(--accent);
+    text-decoration: none;
+    overflow-wrap: anywhere;
+}
+
+.mem-page a:hover {
+    text-decoration: underline;
+}
+
+.mem-status {
+    margin-left: auto;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}
+
+.mem-filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 0.75rem;
+    margin-bottom: 0.75rem;
+}
+
+.mem-page input:not([type="checkbox"]),
+.mem-page select,
+.mem-page button,
+.mem-button {
+    padding: 0.3rem 0.55rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font: inherit;
+    font-size: 0.85rem;
+}
+
+.mem-page button,
+.mem-button {
+    cursor: pointer;
+}
+
+.mem-page button:hover:not(:disabled),
+.mem-button:hover {
+    border-color: var(--accent);
+}
+
+.mem-page button:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.mem-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+}
+
+.mem-table th,
+.mem-table td {
+    padding: 0.35rem 0.75rem 0.35rem 0;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    vertical-align: top;
+}
+
+.mem-table th {
+    color: var(--text-muted);
+    font-weight: 400;
+}
+
+.mem-nowrap {
+    white-space: nowrap;
+}
+
+.mem-actions button {
+    padding: 0.05rem 0.4rem;
+    font-size: 0.75rem;
+}
+
+.mem-id,
+.mem-note,
+.mem-empty,
+.mem-arrow {
+    color: var(--text-muted);
+}
+
+.mem-note,
+.mem-id {
+    font-size: 0.75rem;
+}
+
+.mem-invalid td {
+    opacity: 0.55;
+}
+
+.mem-invalid td:nth-child(3) {
+    text-decoration: line-through;
+    text-decoration-color: var(--text-muted);
+}
+
+.mem-invalid .mem-note,
+.mem-invalid .mem-evidence {
+    display: block;
+    text-decoration: none;
+}
+
+.mem-failed td {
+    color: var(--red);
+}
+
+.mem-evidence {
+    margin: 0.35rem 0;
+    padding-left: 0.75rem;
+    border-left: 2px solid var(--border);
+    overflow-wrap: anywhere;
+}
+
+.mem-pre {
+    margin-top: 0.35rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font: inherit;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+.mem-summary {
+    max-width: 70ch;
+}
+
+.mem-check {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    font-size: 0.85rem;
+}
+
+/* An entity's connections: itself in the middle, what its facts link it to around it */
+.mem-graph {
+    display: block;
+    width: 100%;
+    max-width: 720px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-surface);
+}
+
+.mem-graph line {
+    stroke: var(--border);
+}
+
+.mem-graph text {
+    fill: var(--text);
+    font-size: 12px;
+}
+
+.mem-graph circle {
+    fill: var(--text-muted);
+}
+
+.mem-graph a:hover text {
+    fill: var(--accent);
+    text-decoration: underline;
+}
+
+.mem-graph .mem-graph-self { fill: var(--accent); font-weight: 600; }
+.mem-graph .mem-graph-person { fill: var(--green); }
+.mem-graph .mem-graph-project { fill: var(--orange); }
+.mem-graph .mem-graph-tool { fill: var(--cyan); }
+.mem-graph .mem-graph-place { fill: var(--red); }
+
+.settings {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    max-width: 70ch;
+}
+
+.settings label:not(.mem-check) {
+    display: grid;
+    grid-template-columns: 11rem 1fr;
+    gap: 0.15rem 0.75rem;
+    align-items: center;
+    font-size: 0.85rem;
+}
+
+.settings small {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+}
+
+.settings label:not(.mem-check) small {
+    grid-column: 2;
+}
+
+.settings .mem-check {
+    flex-wrap: wrap;
+}
+
 @media (prefers-reduced-motion: reduce) {
     * {
         transition-duration: 0.01ms !important;
