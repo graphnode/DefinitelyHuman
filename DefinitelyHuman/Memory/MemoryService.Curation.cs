@@ -28,7 +28,7 @@ public sealed partial class MemoryService
         {
           "type": "object",
           "properties": {
-            "summary": { "type": "string", "description": "A profile of the entity in two to four sentences, from the facts that are still current." },
+            "summary": { "type": "string", "description": "A profile of the entity in two to four sentences: what it is (from the description, when one is given), then what the facts that are still current say about it." },
             "description_wrong": { "type": "boolean", "description": "True only when a web description was given and it describes a different thing than the facts are about." },
             "merges": {
               "type": "array",
@@ -111,7 +111,13 @@ public sealed partial class MemoryService
           and is simply old is not contradicted. When in doubt, leave it.
         - insights: a conclusion worth having that no single fact states but several together support.
           At most three, and none that restates an existing fact. Often there are none.
-        - summary: a short profile from what is still current, written plainly in the third person.
+        - summary: a short profile from what is still current, written plainly in the third person. When
+          a description is given (and is not wrong), open with what the thing is, in your own words, and
+          then say what the channel makes of it. Keep the two apart: what the thing is comes from the
+          description, opinions and experiences belong to the people who voiced them ("alice finds it
+          slow"), and nothing from the description is something anyone in the channel said.
+        - Facts marked read-only are filed under another entity that tidies them. Use them for the
+          summary and the insights; never list them under merges or invalidations.
         - description_wrong: you may be given a description of the entity that was looked up on the web
           from its name. Say true when the facts show the channel means something else by that name (the
           description is of a comic character, the facts are about a video game of the same name), so it
@@ -151,10 +157,14 @@ public sealed partial class MemoryService
         var detail = new StringBuilder();
         try
         {
-            // Due: has a current fact newer than its last curation.
+            // Due: since its last curation it gained a fact (as subject or as the thing a fact links
+            // to: most tools, games and projects only ever appear that way) or a description.
             var due = await db.Entities
-                .Where(e => db.Facts.Any(f => f.SubjectEntityId == e.EntityId && f.InvalidatedAt == null
-                                              && (e.CuratedAt == null || f.CreatedAt > e.CuratedAt)))
+                .Where(e => db.Facts.Any(f => (f.SubjectEntityId == e.EntityId || f.ObjectEntityId == e.EntityId)
+                                              && f.InvalidatedAt == null
+                                              && (e.CuratedAt == null || f.CreatedAt > e.CuratedAt))
+                            || db.EntityDescriptions.Any(d => d.EntityId == e.EntityId && d.Text != ""
+                                                              && (e.CuratedAt == null || d.CreatedAt > e.CuratedAt)))
                 .ToListAsync(ct);
 
             foreach (var entity in due)
@@ -200,8 +210,11 @@ public sealed partial class MemoryService
         if (await db.Entities.FindAsync([entityId], ct) is not { } entity)
             return (0, 0, 0);
 
+        // Everything said about it, on either side of a fact. Only the facts it is the subject of
+        // are its own to tidy; the rest belong to another entity's curation and are read only,
+        // or the two passes would merge and invalidate the same fact from both ends.
         var facts = await db.Facts
-            .Where(f => f.SubjectEntityId == entity.EntityId && f.InvalidatedAt == null)
+            .Where(f => (f.SubjectEntityId == entity.EntityId || f.ObjectEntityId == entity.EntityId) && f.InvalidatedAt == null)
             .OrderByDescending(f => f.ValidFrom).Take(MaxFactsPerCuration).ToListAsync(ct);
         facts.Reverse();
 
@@ -224,11 +237,11 @@ public sealed partial class MemoryService
         var prompt = new StringBuilder();
         prompt.AppendLine($"Entity: {entity.Name} ({entity.Type})");
         prompt.AppendLine($"Today: {startedAt:yyyy-MM-dd}");
-        if (description is { Edited: false, Text.Length: > 0 })
-            prompt.AppendLine($"Web description, looked up from the name: {OneLine(description.Text)}");
+        if (description is { Text.Length: > 0 })
+            prompt.AppendLine($"{(description.Edited ? "Description, written by the bot's owner" : "Web description, looked up from the name")}: {OneLine(description.Text)}");
         prompt.AppendLine("Facts:");
         foreach (var fact in facts)
-            prompt.AppendLine($"[{fact.FactId}] {fact.ValidFrom:yyyy-MM-dd} ({fact.Source.ToString().ToLowerInvariant()}) {OneLine(fact.Text)}");
+            prompt.AppendLine($"[{fact.FactId}] {fact.ValidFrom:yyyy-MM-dd} ({fact.Source.ToString().ToLowerInvariant()}{(fact.SubjectEntityId == entityId ? "" : ", read-only")}) {OneLine(fact.Text)}");
 
         var (text, input, output) = await AskAsync(UsageLog.Curation, model, CurationInstructions, prompt.ToString(),
             CurationSchema, "curation", maxTokens: 8192, ct);
@@ -247,7 +260,8 @@ public sealed partial class MemoryService
         {
             // Only facts that are still current: an id can't be merged twice in one pass.
             var replaced = (merge.Replaces ?? []).Distinct()
-                .Where(id => byId.TryGetValue(id, out var f) && f.InvalidatedAt == null).Select(id => byId[id]).ToList();
+                .Where(id => byId.TryGetValue(id, out var f) && f.InvalidatedAt == null && f.SubjectEntityId == entityId)
+                .Select(id => byId[id]).ToList();
             if (replaced.Count < 2 || string.IsNullOrWhiteSpace(merge.Text) || merge.Text.Length > 500)
                 continue;
 
@@ -264,7 +278,7 @@ public sealed partial class MemoryService
 
         foreach (var invalidation in curation.Invalidations ?? [])
         {
-            if (!byId.TryGetValue(invalidation.FactId, out var fact) || fact.InvalidatedAt != null)
+            if (!byId.TryGetValue(invalidation.FactId, out var fact) || fact.InvalidatedAt != null || fact.SubjectEntityId != entityId)
                 continue;
 
             fact.InvalidatedAt = now;

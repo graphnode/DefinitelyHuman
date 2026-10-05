@@ -29,7 +29,7 @@
     {
         <table class="mem-table">
             <thead>
-                <tr><th>Name</th><th>Type</th><th>Facts</th><th>Also known as</th><th>What it is, and its profile</th></tr>
+                <tr><th>Name</th><th>Type</th><th>Facts</th><th>Also known as</th><th>Profile</th></tr>
             </thead>
             <tbody>
                 @foreach (var row in _rows)
@@ -39,7 +39,7 @@
                         <td>@row.Entity.Type</td>
                         <td>@row.Facts</td>
                         <td>@row.Aliases</td>
-                        <td>@row.Description @row.Entity.Summary</td>
+                        <td>@(string.IsNullOrWhiteSpace(row.Entity.Summary) ? row.Description : row.Entity.Summary)</td>
                     </tr>
                 }
             </tbody>

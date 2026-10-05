@@ -604,9 +604,9 @@ public sealed partial class MemoryService : BackgroundService
                     .Where(f => (f.SubjectEntityId == id || f.ObjectEntityId == id) && f.InvalidatedAt == null)
                     .OrderByDescending(f => f.Source == FactSource.Derived).ThenByDescending(f => f.ValidFrom)
                     .Take(RecallFactsPerEntity).ToListAsync();
-                // What it is in general, then what the channel makes of it.
-                string about = string.Join(" ", new[] { descriptions.GetValueOrDefault(id), entity.Summary }
-                    .Where(s => !string.IsNullOrWhiteSpace(s)).Select(s => OneLine(s!)));
+                // The profile already says what the thing is; until curation has written one,
+                // the description stands in.
+                string about = OneLine(string.IsNullOrWhiteSpace(entity.Summary) ? descriptions.GetValueOrDefault(id) ?? "" : entity.Summary);
                 if (facts.Count == 0 && about.Length == 0)
                     continue;
 
