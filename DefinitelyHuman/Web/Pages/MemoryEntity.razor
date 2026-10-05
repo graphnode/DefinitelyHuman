@@ -24,6 +24,9 @@ else
     </div>
 
     <div class="page-body mem-page">
+        <p class="mem-summary">@(_entity.Summary ?? "No profile yet; the curation pass writes one once there are a few facts.")</p>
+
+        <h3>Description</h3>
         @if (_description is { Text.Length: > 0 })
         {
             <p class="mem-summary">@_description.Text <span class="mem-note">(@(_description.Edited ? "written by hand" : "from the web"))</span></p>
@@ -43,7 +46,6 @@ else
                 <button type="button" title="Forget it and search the web again on the next turn (when lookups are switched on)" @onclick="LookUpAgain">Look up again</button>
             </form>
         </details>
-        <p class="mem-summary">@(_entity.Summary ?? "No profile yet; the curation pass writes one once there are a few facts.")</p>
 
         @if (_neighbours.Count > 0)
         {
@@ -97,6 +99,22 @@ else
             </table>
         }
 
+        <h3>Split</h3>
+        <form class="mem-filters" @onsubmit="Split">
+            <span>This is two things under one name? Move the facts containing</span>
+            <input aria-label="Text the facts to move contain" placeholder="Fable 5.1" @bind="_splitText" @bind:event="oninput" />
+            <span>to</span>
+            <input aria-label="Entity to move them to" placeholder="existing or new entity" @bind="_splitName" @bind:event="oninput" />
+            <select aria-label="Its type, if it is new" @bind="_splitType">
+                @foreach (string type in new[] { "person", "project", "tool", "place", "topic", "other" })
+                {
+                    <option value="@type">@type</option>
+                }
+            </select>
+            <button type="submit" disabled="@(SplitCount == 0 || string.IsNullOrWhiteSpace(_splitName))">Move @SplitCount @(SplitCount == 1 ? "fact" : "facts")</button>
+            <span class="mem-note" role="status">@_splitNote</span>
+        </form>
+
         <h3>Merge</h3>
         <form class="mem-filters" @onsubmit="Merge">
             <span>Fold this entity into</span>
@@ -130,6 +148,7 @@ else
     private List<Link> _links = [];
     private List<Entity> _others = [];
     private bool _showInvalidated;
+    private string _splitText = "", _splitName = "", _splitType = "tool", _splitNote = "";
     private int _mergeInto;
     private bool _mergeConfirmed;
 
@@ -184,6 +203,22 @@ else
         await using var db = new ChattingContext();
         await db.EntityDescriptions.Where(d => d.EntityId == Id).ExecuteDeleteAsync();
         MemoryService.Wake();
+        await Load();
+    }
+
+    // Of the facts listed; invalidated ones move too even when they are not shown.
+    private int SplitCount => _splitText.Trim() is { Length: > 0 } text
+        ? _facts.Count(r => r.Fact.Text.Contains(text, StringComparison.OrdinalIgnoreCase))
+        : 0;
+
+    private async Task Split()
+    {
+        if (SplitCount == 0 || string.IsNullOrWhiteSpace(_splitName))
+            return;
+
+        int moved = await MemoryService.MoveFactsAsync(Id, _splitText, _splitName, _splitType);
+        _splitNote = moved == 0 ? "Nothing moved." : $"Moved {moved} facts to {_splitName.Trim()}.";
+        _splitText = "";
         await Load();
     }
 

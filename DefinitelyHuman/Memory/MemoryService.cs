@@ -37,6 +37,10 @@ public sealed partial class MemoryService : BackgroundService
     private const int MaxChunkAttempts = 3;
 
     // How much is recalled for one glance.
+    // Known entities named in a chunk that extraction is told about, and how much about each.
+    private const int KnownEntitiesDescribed = 15;
+    private const int KnownFactsPerEntity = 3;
+
     private const int RecallEntities = 8;
     private const int RecallFactsPerEntity = 6;
 
@@ -186,6 +190,11 @@ public sealed partial class MemoryService : BackgroundService
           "the build server is unreliable". Something said about another person is a claim by the speaker.
         - A person is named by their nick exactly as it appears in "<nick>". Reuse the names in the known
           entities list instead of inventing a new spelling for the same thing.
+        - One name can mean different things: "Fable" the game series and "Fable 5.1" the AI model are
+          two entities. Use the specific name that was meant ("Fable 5.1", not "Fable"). Before attaching
+          a fact to a known entity, check it against what you are told about that entity: it does not
+          have to match everything, but when the log is clearly about a different thing with the same
+          name, give yours a name that tells them apart ("Fable (game)") instead of reusing the entity.
         - Refer to people by nick or "they". Never guess anyone's gender from a nick.
         - Fill in "object" only when the fact truly links two people or things ("alice works on Foo").
         - "evidence" lists the [n] numbers of the lines the fact comes from. Only numbered lines count; the
@@ -244,7 +253,7 @@ public sealed partial class MemoryService : BackgroundService
             context.Reverse();
 
             var prompt = new StringBuilder();
-            prompt.Append(await KnownAsync(db, chunk.Select(m => m.Nick).Distinct(), ct));
+            prompt.Append(await KnownAsync(db, chunk, ct));
             if (context.Count > 0)
             {
                 prompt.AppendLine("Earlier lines, for context only:");
@@ -345,9 +354,13 @@ public sealed partial class MemoryService : BackgroundService
         }
     }
 
-    /// <summary>What extraction is told is already known: every entity's name, and the current facts about the speakers.</summary>
-    private static async Task<string> KnownAsync(ChattingContext db, IEnumerable<string> nicks, CancellationToken ct)
+    /// <summary>
+    /// What extraction is told is already known: every entity's name, what the ones named in the
+    /// chunk are (so a new fact can be checked against them), and the current facts about the speakers.
+    /// </summary>
+    private static async Task<string> KnownAsync(ChattingContext db, List<Message> chunk, CancellationToken ct)
     {
+        var nicks = chunk.Select(m => m.Nick).Distinct();
         var entities = await db.Entities.OrderByDescending(e => e.EntityId).Take(300).ToListAsync(ct);
         if (entities.Count == 0)
             return "";
@@ -358,6 +371,33 @@ public sealed partial class MemoryService : BackgroundService
 
         var aliases = nicks.Select(Normalize).ToList();
         var speakerIds = await db.EntityAliases.Where(a => aliases.Contains(a.Alias)).Select(a => a.EntityId).Distinct().ToListAsync(ct);
+
+        // The same name can turn up meaning something else. For each known entity the chunk
+        // names, say what it is, so the model can tell whether this is that thing or a namesake.
+        string text = string.Join("\n", chunk.Select(m => m.Text));
+        var words = WordPattern().Matches(text).Select(m => Normalize(m.Value)).ToHashSet();
+        string lowerText = text.ToLowerInvariant();
+        var namedIds = (await db.EntityAliases.ToListAsync(ct))
+            .Where(a => a.Alias.Length >= 3 && !speakerIds.Contains(a.EntityId)
+                        && (words.Contains(a.Alias) || (a.Alias.Contains(' ') && lowerText.Contains(a.Alias))))
+            .Select(a => a.EntityId).Distinct().Take(KnownEntitiesDescribed).ToList();
+        if (namedIds.Count > 0)
+        {
+            var descriptions = await db.EntityDescriptions.Where(d => namedIds.Contains(d.EntityId) && d.Text != "")
+                .ToDictionaryAsync(d => d.EntityId, d => d.Text, ct);
+            sb.AppendLine("What is known about the entities named in this log (check that a fact fits before attaching it):");
+            foreach (var entity in entities.Where(e => namedIds.Contains(e.EntityId)))
+            {
+                var known = await db.Facts
+                    .Where(f => (f.SubjectEntityId == entity.EntityId || f.ObjectEntityId == entity.EntityId) && f.InvalidatedAt == null)
+                    .OrderByDescending(f => f.ValidFrom).Take(KnownFactsPerEntity).Select(f => f.Text).ToListAsync(ct);
+                sb.AppendLine($"- {entity.Name} ({entity.Type}){(descriptions.TryGetValue(entity.EntityId, out string? what) ? ": " + Truncate(what, 160) : "")}");
+                foreach (string fact in known)
+                    sb.AppendLine($"  - {OneLine(fact)}");
+            }
+            sb.AppendLine();
+        }
+
         var facts = await db.Facts
             .Where(f => speakerIds.Contains(f.SubjectEntityId) && f.InvalidatedAt == null)
             .OrderByDescending(f => f.ValidFrom).Take(80).ToListAsync(ct);
@@ -448,6 +488,50 @@ public sealed partial class MemoryService : BackgroundService
         await db.Entities.Where(e => e.EntityId == intoId).ExecuteUpdateAsync(s => s.SetProperty(e => e.CuratedAt, (DateTime?)null));
         await tx.CommitAsync();
         Updated?.Invoke();
+    }
+
+    /// <summary>
+    /// Splits an entity that turned out to be two things under one name ("Fable" the game and
+    /// "Fable 5.1" the model): its facts whose text contains <paramref name="containing"/> move to
+    /// the entity called <paramref name="toName"/>, which is created if need be. Returns how many moved.
+    /// </summary>
+    public async Task<int> MoveFactsAsync(int fromId, string containing, string toName, string toType)
+    {
+        containing = containing.Trim();
+        if (containing.Length == 0)
+            return 0;
+
+        await using var db = new ChattingContext();
+        await using var tx = await db.Database.BeginTransactionAsync();
+        var target = await FindOrCreateEntityAsync(db, toName, toType, CancellationToken.None);
+        if (target is null || target.EntityId == fromId)
+            return 0;
+
+        var facts = (await db.Facts.Where(f => f.SubjectEntityId == fromId || f.ObjectEntityId == fromId).ToListAsync())
+            .Where(f => f.Text.Contains(containing, StringComparison.OrdinalIgnoreCase)).ToList();
+        foreach (var fact in facts)
+        {
+            if (fact.SubjectEntityId == fromId)
+                fact.SubjectEntityId = target.EntityId;
+            if (fact.ObjectEntityId == fromId)
+                fact.ObjectEntityId = target.EntityId;
+            if (fact.ObjectEntityId == fact.SubjectEntityId)
+                fact.ObjectEntityId = null;
+        }
+
+        if (facts.Count > 0)
+        {
+            // Both were described and profiled as one thing; each is looked up and curated afresh.
+            int[] both = [fromId, target.EntityId];
+            await db.EntityDescriptions.Where(d => both.Contains(d.EntityId) && !d.Edited).ExecuteDeleteAsync();
+            await db.Entities.Where(e => both.Contains(e.EntityId)).ExecuteUpdateAsync(s => s.SetProperty(e => e.CuratedAt, (DateTime?)null));
+        }
+
+        await db.SaveChangesAsync();
+        await tx.CommitAsync();
+        _wake.Release();
+        Updated?.Invoke();
+        return facts.Count;
     }
 
     /// <summary>

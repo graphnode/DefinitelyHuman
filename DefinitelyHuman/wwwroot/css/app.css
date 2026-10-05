@@ -867,12 +867,16 @@ body {
     cursor: pointer;
 }
 
+.mem-edit .mem-question {
+    max-width: 140ch;
+}
+
 .mem-edit form {
     margin: 0.4rem 0 0;
 }
 
 .mem-summary {
-    max-width: 70ch;
+    max-width: 140ch;
 }
 
 .mem-check {
