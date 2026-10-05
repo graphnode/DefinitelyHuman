@@ -46,7 +46,7 @@
                     <hr /><span>@FormatDate(context.Timestamp)</span><hr />
                 </div>
             }
-            <div class="tl-row tl-msg @MsgRowClass(context)">
+            <div class="tl-row tl-msg @MsgRowClass(context) @(context.MessageId == Line ? "tl-linked" : null)">
                 <span class="tl-time">@context.Timestamp.ToLocalTime().ToString("HH:mm:ss")</span>
                 <span class="tl-nick" style="color:@NickColor(context.Nick, context.IsOwnMessage)">@context.Nick</span>
                 <div class="tl-content">

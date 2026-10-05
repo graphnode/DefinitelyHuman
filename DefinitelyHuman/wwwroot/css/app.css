@@ -400,6 +400,13 @@ body {
     animation: tl-flash 1.8s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/* The line a link from the memory pages points at (?line=): stays marked while the link is in the address bar */
+.tl-row.tl-linked,
+.tl-row.tl-linked:hover {
+    background: rgba(255, 158, 100, 0.14);
+    box-shadow: inset 3px 0 0 var(--orange);
+}
+
 /* Merged timeline (chat messages + agent events) */
 .tl-row {
     display: flex;

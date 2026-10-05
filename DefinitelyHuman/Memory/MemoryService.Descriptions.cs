@@ -41,7 +41,8 @@ public sealed partial class MemoryService
            for each remark what kind of thing it is about (a game, a library, an AI model, a place...).
            If no single thing could fit them all, stop there: the answer is MIXED (see below), and no
            search is needed. One thing put to several uses is still one thing: an AI model that someone
-           chats with and also has write their code is one AI model, not two things.
+           chats with and also has write their code is one AI model, and a company whose several
+           products come up is one company.
         2. Search for the name together with that kind ("Fable video game", not "Fable"), never the bare
            name. Do not take the first result: take the one the remarks fit.
         3. Describe the thing that carries the name, not something else the remarks mention with it: for

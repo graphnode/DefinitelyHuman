@@ -59,7 +59,7 @@ class ChatVirtualizer {
         // after a resize, so reconnect the IO when a spacer height changes.
         this._spacerResizeObserver = new ResizeObserver(() => {
             if (this._disposed) return;
-            this._pinToBottom();
+            this._pin();
             this._intersectionObserver.unobserve(this._spacerBefore);
             this._intersectionObserver.unobserve(this._spacerAfter);
             this._intersectionObserver.observe(this._spacerBefore);
@@ -87,6 +87,11 @@ class ChatVirtualizer {
     scrollToIndex(index) {
         const el = this._itemElement(index);
         if (!el) return;
+        // Rows around it are still at their estimated height, and the list may still be holding
+        // itself at the bottom from when it opened. Hold this row in the middle instead while
+        // everything is measured.
+        this._pinIndex = index;
+        this._pinUntil = performance.now() + 1000;
         el.scrollIntoView({ block: 'center' });
         // Restart the flash if this row is jumped to twice in a row.
         el.classList.remove('cv-flash');
@@ -152,7 +157,7 @@ class ChatVirtualizer {
             info.height = newHeight;
             this._dotNetRef.invokeMethodAsync('OnItemResized', info.index, newHeight);
         }
-        this._pinToBottom();
+        this._pin();
     }
 
     refreshObservedElements() {
@@ -187,12 +192,18 @@ class ChatVirtualizer {
     scrollToBottom() {
         // Rows just rendered are still at their estimated height. Stay pinned for a moment
         // while they are measured, or the view ends up short of the real bottom.
+        this._pinIndex = null;
         this._pinUntil = performance.now() + 1000;
-        this._pinToBottom();
+        this._pin();
     }
 
-    _pinToBottom() {
-        if (this._scrollContainer && performance.now() < this._pinUntil)
+    // For a moment after a jump, keeps the view where the jump put it: at the bottom, or centred
+    // on the row jumped to.
+    _pin() {
+        if (!this._scrollContainer || performance.now() >= this._pinUntil) return;
+        if (this._pinIndex != null)
+            this._itemElement(this._pinIndex)?.scrollIntoView({ block: 'center' });
+        else
             this._scrollContainer.scrollTop = this._scrollContainer.scrollHeight;
     }
 
