@@ -910,13 +910,14 @@ body {
     text-decoration: underline;
 }
 
-.mem-graph-self { fill: var(--accent); font-weight: 600; }
-.mem-graph-person { fill: var(--green); }
-.mem-graph-project { fill: var(--orange); }
-.mem-graph-tool { fill: var(--cyan); }
-.mem-graph-place { fill: var(--red); }
-.mem-graph-topic,
-.mem-graph-other { fill: var(--text-muted); }
+circle.mem-graph-self,
+text.mem-graph-self { fill: var(--accent); font-weight: 600; }
+circle.mem-graph-person { fill: var(--green); }
+circle.mem-graph-project { fill: var(--orange); }
+circle.mem-graph-tool { fill: var(--cyan); }
+circle.mem-graph-place { fill: var(--red); }
+circle.mem-graph-topic,
+circle.mem-graph-other { fill: var(--text-muted); }
 
 .mem-legend {
     display: flex;
