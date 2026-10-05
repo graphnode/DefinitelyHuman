@@ -24,6 +24,25 @@ else
     </div>
 
     <div class="page-body mem-page">
+        @if (_description is { Text.Length: > 0 })
+        {
+            <p class="mem-summary">@_description.Text <span class="mem-note">(@(_description.Edited ? "written by hand" : "from the web"))</span></p>
+        }
+        <details class="mem-edit">
+            <summary>@(_description switch
+                {
+                    null => "No description yet",
+                    { Text.Length: > 0 } => "Edit description",
+                    { Edited: true } => "Description cleared by hand",
+                    _ => "Looked up, nothing found",
+                })</summary>
+            <form class="mem-filters" @onsubmit="() => SaveDescription(_descriptionDraft)">
+                <input class="mem-question" aria-label="What this is" placeholder="What this is, in a sentence or two" @bind="_descriptionDraft" />
+                <button type="submit">Save</button>
+                <button type="button" title="Keep it empty and never look it up" @onclick="@(() => SaveDescription(""))">Clear</button>
+                <button type="button" title="Forget it and search the web again on the next turn (when lookups are switched on)" @onclick="LookUpAgain">Look up again</button>
+            </form>
+        </details>
         <p class="mem-summary">@(_entity.Summary ?? "No profile yet; the curation pass writes one once there are a few facts.")</p>
 
         @if (_neighbours.Count > 0)
@@ -49,6 +68,13 @@ else
                     </a>
                 }
             </svg>
+            <div class="mem-legend">
+                @foreach (string type in _neighbours.Select(n => n.Type).Distinct().Order().Prepend("self"))
+                {
+                    <span><svg viewBox="0 0 10 10" aria-hidden="true"><circle class="mem-graph-@type" cx="5" cy="5" r="5" /></svg>@(type == "self" ? "this entity" : type)</span>
+                }
+                <span>A thicker line means more facts link the two; hover a name to read them.</span>
+            </div>
         }
 
         <h3>Facts</h3>
@@ -96,6 +122,8 @@ else
     [Parameter] public int Id { get; set; }
 
     private Entity? _entity;
+    private EntityDescription? _description;
+    private string _descriptionDraft = "";
     private List<string> _aliases = [];
     private List<FactTable.FactRow> _facts = [];
     private List<Neighbour> _neighbours = [];
@@ -114,6 +142,8 @@ else
         if (_entity is null)
             return;
 
+        _description = await db.EntityDescriptions.FindAsync(Id);
+        _descriptionDraft = _description?.Text ?? "";
         string ownName = _entity.Name.ToLowerInvariant();
         var aliases = await db.EntityAliases.Where(a => a.EntityId == Id).Select(a => a.Alias).ToListAsync();
         _aliases = aliases.Where(a => a != ownName).ToList();
@@ -137,6 +167,24 @@ else
         _links = lines
             .SelectMany(m => LinkPreviewService.ExtractUrls(m.Text).Select(u => new Link(m.Timestamp, LinkPreviewService.CleanUrl(u.Value))))
             .ToList();
+    }
+
+    // A hand-written (or hand-cleared) description is marked so no lookup replaces it.
+    private async Task SaveDescription(string text)
+    {
+        await using var db = new ChattingContext();
+        await db.EntityDescriptions.Where(d => d.EntityId == Id).ExecuteDeleteAsync();
+        db.EntityDescriptions.Add(new EntityDescription { EntityId = Id, Text = text.Trim(), Edited = true });
+        await db.SaveChangesAsync();
+        await Load();
+    }
+
+    private async Task LookUpAgain()
+    {
+        await using var db = new ChattingContext();
+        await db.EntityDescriptions.Where(d => d.EntityId == Id).ExecuteDeleteAsync();
+        MemoryService.Wake();
+        await Load();
     }
 
     private async Task Merge()

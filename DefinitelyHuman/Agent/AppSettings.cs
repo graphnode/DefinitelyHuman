@@ -13,9 +13,11 @@ public sealed class AppSettings
     public const string ChatModel = "model.chat";
     public const string ExtractionModel = "model.extraction";
     public const string CurationModel = "model.curation";
+    public const string DescriptionModel = "model.description";
     public const string ExtractionEnabled = "memory.extraction";
     public const string CurationEnabled = "memory.curation";
     public const string RecallEnabled = "memory.recall";
+    public const string DescriptionEnabled = "memory.description";
 
     private readonly Dictionary<string, string> _defaults;
     private readonly ConcurrentDictionary<string, string> _values = new();
@@ -28,9 +30,11 @@ public sealed class AppSettings
             [ChatModel] = chatModel,
             [ExtractionModel] = "claude-haiku-4-5-20251001",
             [CurationModel] = "claude-sonnet-5-5",
+            [DescriptionModel] = "claude-haiku-4-5-20251001",
             [ExtractionEnabled] = "true",
             [CurationEnabled] = "true",
             [RecallEnabled] = "true",
+            [DescriptionEnabled] = "false", // spends on web searches, so it is asked for
         };
 
         using var db = new ChattingContext();

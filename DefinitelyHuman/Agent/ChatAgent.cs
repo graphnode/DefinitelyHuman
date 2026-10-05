@@ -397,6 +397,7 @@ public class ChatAgent
             var session = await agent.CreateSessionAsync();
 
             var response = await agent.RunAsync(prompt, session, new ChatClientAgentRunOptions(_chatOptions));
+            await UsageLog.RecordAsync(UsageLog.Chat, model, response.Usage?.InputTokenCount ?? 0, response.Usage?.OutputTokenCount ?? 0);
 
             // Extended-thinking blocks arrive as TextReasoningContent, separate from the reply.
             foreach (var thought in response.Messages

@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
 
 namespace DefinitelyHuman.Data;
 
@@ -18,6 +19,21 @@ public class Entity
 
     /// <summary>When the curation pass last went over this entity; facts created later make it due again.</summary>
     public DateTime? CuratedAt { get; set; }
+}
+
+/// <summary>
+/// What a project, tool, place or topic is in the world at large, looked up on the web (people
+/// are never looked up). A row with an empty text means the lookup found nothing (or the text
+/// was cleared by hand), so it isn't repeated; deleting the row asks for a fresh lookup.
+/// </summary>
+public class EntityDescription
+{
+    [Key, DatabaseGenerated(DatabaseGeneratedOption.None)] public int EntityId { get; init; }
+    public required string Text { get; set; }
+    public DateTime CreatedAt { get; init; } = DateTime.UtcNow;
+
+    /// <summary>Written or cleared by hand on the entity page; nothing automatic replaces it.</summary>
+    public bool Edited { get; set; }
 }
 
 /// <summary>
@@ -78,6 +94,7 @@ public enum MemoryRunKind
 {
     Extraction,
     Curation,
+    Description,
 }
 
 /// <summary>One model pass of the memory system: an extraction over a slice of log, or a night's curation.</summary>
@@ -111,6 +128,20 @@ public class ProcessedMessage
 }
 
 /// <summary>A setting changed from the dashboard (see <c>AppSettings</c>); absent means the default.</summary>
+/// <summary>One model call, for the Usage page: which job made it, with which model, and how much it used.</summary>
+public class ModelUsage
+{
+    public int ModelUsageId { get; init; }
+    public DateTime At { get; init; } = DateTime.UtcNow;
+
+    /// <summary>chat, extraction, curation, lookup or ask (see <c>UsageLog</c>).</summary>
+    [MaxLength(16)] public required string Job { get; init; }
+    [MaxLength(64)] public required string Model { get; init; }
+    public long InputTokens { get; init; }
+    public long OutputTokens { get; init; }
+    public int WebSearches { get; init; }
+}
+
 public class Setting
 {
     [Key, MaxLength(64)] public required string Key { get; init; }

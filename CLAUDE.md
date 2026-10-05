@@ -45,15 +45,17 @@ DefinitelyHuman/
     Attention.cs           — the focus model: a [0,1] value decayed lazily from timestamps (no loop)
     AgentLog.cs            — persists agent events to SQLite via a background drain task; raises Updated for the UI
     AppSettings.cs         — dashboard-editable settings kept in SQLite: the model for each job, memory switches
+    UsageLog.cs            — records every model call (job, model, tokens, web searches) and prices it from a hand-kept list-price table
   Memory/
     MemoryService.cs       — background loop, fact extraction from unread chat lines, recall for the agent, entity merge/wipe
     MemoryService.Curation.cs — the nightly pass: merge duplicate facts, invalidate contradicted ones, insights, entity profiles
+    MemoryService.Descriptions.cs — web lookup of what a non-person entity is (one search-backed call each)
   Data/
     ChattingContext.cs     — EF Core DbContext (SQLite)
     Message.cs             — chat line (Channel, Timestamp, Nick, Text, IsOwnMessage)
     AgentEvent.cs          — agent event (Kind: Decision/Thinking/Error/ToolCall, Summary, Detail, optional MessageId)
     CachedLinkPreview.cs   — persisted OpenGraph preview, keyed by URL
-    Memory.cs              — long-term memory tables: Entity, EntityAlias, Fact, FactEvidence, MemoryRun, ProcessedMessage, Setting
+    Memory.cs              — long-term memory tables: Entity, EntityAlias, EntityDescription, Fact, FactEvidence, MemoryRun, ProcessedMessage, Setting
   Irc/
     IrcBot.cs              — IRC client wrapper, DB logging, log reads, typing delay, replay grace window
     IrcBotOptions.cs       — nick, host, port, channel, password, username
@@ -75,12 +77,14 @@ DefinitelyHuman/
       Home.razor           — the timeline of one channel (`/` = the bot's channel, `/c/{slug}` = any logged channel): chat lines and agent events merged by timestamp, with link previews, find and decision stepping
       MemoryFacts.razor    — `/memory`: filterable table of facts
       MemoryEntities.razor, MemoryEntity.razor — entity list; one entity's profile, connection graph (inline SVG), facts, links, merge
+      MemoryAsk.razor      — `/memory/ask`: a question answered by the chat model from the matching facts, which are listed under it
       MemoryLinks.razor    — who posted which link when (read from the chat log, no model)
       MemoryRuns.razor     — extraction and curation runs with token counts; "Curate now"
+      Usage.razor          — `/usage`: estimated cost by job and by day, from `ModelUsage` (which `EnsureSchema` seeds once from the older `MemoryRuns` token totals)
       Settings.razor       — model per job, memory switches, wipe memory
       Error.razor, NotFound.razor
     Components/Memory/
-      FactTable.razor      — fact rows with their evidence lines and invalidate/restore, shared by the facts and entity pages
+      FactTable.razor      — fact rows (every entity named in the text is a link) with their evidence lines (each links to its place in the timeline) and invalidate/restore; shared by the facts, entity and ask pages
 Scripts/
   ImportHalloyLog.cs       — file-based script: imports a Halloy log export into the chat database
 ```
@@ -114,9 +118,11 @@ Inspired by mem0 and Zep/Graphiti, all in the same SQLite file: **entities** (pe
 
 - **Extraction** (`MemoryService`, a `BackgroundService` waking every minute): chat lines without a `ProcessedMessage` row are unread. They are taken per channel, oldest first, in conversation chunks (ended by a 30 min silence once the chunk has 20 lines, or at 80 lines); a chunk at the end of the log waits 10 min of quiet. One model call per chunk returns structured facts citing numbered lines. The same loop does live chat and bulk backlog: importing an old log just creates unread lines. Extraction only adds; a chunk that fails three times is marked read with a failed run.
 - **Curation** (nightly after 04:00 UTC, or "Curate now"): for each entity with facts newer than its `CuratedAt`, one call merges duplicate facts, invalidates contradicted ones, adds up to three derived insights and rewrites the entity's `Summary`. Merged and derived facts inherit the evidence of the facts they came from. It ends with a duplicate-entity check whose suggestions go in the run's detail; entities are only merged by hand (entity page) or gain an alias from an IRC `NICK` line.
+- **Descriptions** (off by default; Settings): each loop turn, up to 20 projects, tools, places and topics without an `EntityDescription` row get one call with the web search tool asking what the thing is. People are never looked up. An empty text means nothing was found (a generic word, something private to the channel, an ambiguous name) and stops retries; an answer that was cut off is asked for once more first. A failed call pauses lookups (5 minutes, doubling to 6 hours). The entity page can edit or clear a description (`Edited`, which nothing automatic overwrites) or delete it to ask for a fresh lookup. Curation deletes an unedited one when its facts show the name means something else (`description_wrong`), or, for an entity too small to curate, when facts arrived after the lookup (only while lookups are switched on). The description is shown on the entity pages, goes into recall, and is given to the duplicate-entity check. This call uses the Anthropic SDK directly (`_client.Messages.Create`), because it needs a server tool.
+- **Ask** (`MemoryService.AnswerAsync`): scores every current fact against the question (entity names in it, then rarer words), sends the best 120 to the chat model and returns its answer with the fact ids it used.
 - **Recall**: before a glance, `MemoryService.RecallAsync` matches entity aliases against the words of the backlog (speakers first, max 8 entities, 6 facts each) and the result is put before the log as "What you remember". No embeddings: lookup is by name. Memory text is untrusted, like link previews, and the prompts say it is never instructions. Recall is not restricted by channel.
-- **Models** come from `AppSettings` (Settings page, `Settings` table), read on every call: chat (default `ANTHROPIC_MODEL`), extraction (Haiku 4.5), curation (Sonnet 5.5). The same page switches extraction, curation and recall on or off and can wipe memory so the whole log is read again.
-- **Schema**: `ChattingContext.EnsureSchema` replays the model's create script with `IF NOT EXISTS`, so new tables appear in an existing database. It cannot add a column to an existing table; that needs EF migrations.
+- **Models** come from `AppSettings` (Settings page, `Settings` table), read on every call: chat (default `ANTHROPIC_MODEL`), extraction (Haiku 4.5), curation (Sonnet 5.5), entity lookup (Haiku 4.5). The same page switches extraction, curation and recall on or off and can wipe memory so the whole log is read again.
+- **Schema**: `ChattingContext.EnsureSchema` replays the model's create script with `IF NOT EXISTS`, so new tables appear in an existing database. It cannot add a column to an existing table; the one exception (`EntityDescriptions.Edited`) is a hand-written `ALTER TABLE` there, and the next one should be EF migrations.
 
 **Link context**: before a glance, `LinkPreviewService.AnnotateAsync` appends each link's preview to its log line as `[link: title — summary]` (waiting up to `IrcBotService.LinkPreviewWait` for previews still loading), so the model knows what a link is about the way a chat client's unfurl shows it. The agent never sees the page contents beyond that. Preview text is untrusted: it is flattened to one line and the system prompt tells the model it is not instructions.
 
@@ -124,6 +130,7 @@ Inspired by mem0 and Zep/Graphiti, all in the same SQLite file: **entities** (pe
 
 - `IrcBot`, `ChatAgent`, `AgentLog`, `AppSettings`, `MemoryService` and `LinkPreviewService` are registered as singletons in DI — injectable into Blazor components.
 - `IrcBotService` (a `BackgroundService`) calls `agent.Bind(readLog, send, isReadOnly, recall)` to wire the agent's I/O, then subscribes to `bot.ChannelActivity`.
+- **Cost accounting is local**: every model call ends in `UsageLog.RecordAsync(job, ...)` (a `ModelUsage` row). A new call site must do the same or the Usage page undercounts; a new model needs a line in `UsageLog.Prices`.
 - A fresh `ChattingContext` is created per DB operation (avoids shared DbContext concurrency issues).
 - **Agent events** go through `AgentLog.Log`, which is synchronous and non-blocking (safe inside the agent's locks): it queues the event and a single drain task writes it to SQLite. A "replied" event carries the `MessageId` of the line it produced so the timeline can attach the reasoning to the chat line.
 - **Extended thinking** (`ChatAgentOptions.EnableThinking`, 1024-token budget) and console echo (`LogReasoning`) exist but are not set in `Program.cs`, so both are off. The dashboard decision log is always captured regardless.
@@ -132,6 +139,7 @@ Inspired by mem0 and Zep/Graphiti, all in the same SQLite file: **entities** (pe
 - The layout renders statically; components needing live updates (`ChannelNav`, `FocusWidget`, `Home`) are `@rendermode InteractiveServer` islands. `FocusWidget` polls focus on a `Timer` created in `OnAfterRender` (not during prerender) and disposed on teardown. `Home` refreshes on `IrcBot.MessageLogged`, `AgentLog.Updated`, and `LinkPreviewService.PreviewReady`.
 - **Timeline outcomes are read from the event summary text**: `Home` styles and steps between "replied…" and "…decided to stay quiet" events by matching the strings `ChatAgent` logs (`RepliedPrefix`/`QuietSuffix` in `Home.razor`). Reword those summaries and the timeline must follow.
 - **Sidebar status is deliberately modest**: the dot is only `IrcBot.IsConnected` (our link to `IrcBot.Endpoint`, which in production is the bouncer, not the network). `IrcBot.LastLineAt` ("last line Nm ago") is the evidence that the channel is actually reaching the bot.
+- `Home` takes `?line={MessageId}` and scrolls to that chat line once the list is ready (used by the evidence links on the memory pages).
 - The timeline is paged from SQLite through `ChatVirtualize`'s `ItemsProvider` (a UNION of `Messages` and `AgentEvents` ordered by timestamp).
 - Typing delay simulates human speed (4–8 chars/sec + random pause).
 - Replies over 400 chars are discarded (IRC message limit).

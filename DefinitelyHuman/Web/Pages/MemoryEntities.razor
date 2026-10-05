@@ -29,7 +29,7 @@
     {
         <table class="mem-table">
             <thead>
-                <tr><th>Name</th><th>Type</th><th>Facts</th><th>Also known as</th><th>Profile</th></tr>
+                <tr><th>Name</th><th>Type</th><th>Facts</th><th>Also known as</th><th>What it is, and its profile</th></tr>
             </thead>
             <tbody>
                 @foreach (var row in _rows)
@@ -39,7 +39,7 @@
                         <td>@row.Entity.Type</td>
                         <td>@row.Facts</td>
                         <td>@row.Aliases</td>
-                        <td>@row.Entity.Summary</td>
+                        <td>@row.Description @row.Entity.Summary</td>
                     </tr>
                 }
             </tbody>
@@ -50,7 +50,7 @@
 @code {
     private static readonly string[] Types = ["person", "project", "tool", "place", "topic", "other"];
 
-    private sealed record Row(Entity Entity, int Facts, string Aliases);
+    private sealed record Row(Entity Entity, int Facts, string Aliases, string? Description);
 
     private List<Row> _rows = [];
     private string _search = "";
@@ -72,11 +72,13 @@
             .GroupBy(f => f.SubjectEntityId).Select(g => new { g.Key, Count = g.Count() })
             .ToDictionaryAsync(g => g.Key, g => g.Count);
         var aliases = (await db.EntityAliases.ToListAsync()).ToLookup(a => a.EntityId, a => a.Alias);
+        var descriptions = await db.EntityDescriptions.ToDictionaryAsync(d => d.EntityId, d => d.Text);
 
         // The ones the bot knows most about first.
         _rows = entities
             .Select(e => new Row(e, counts.GetValueOrDefault(e.EntityId),
-                string.Join(", ", aliases[e.EntityId].Where(a => a != e.Name.ToLowerInvariant()))))
+                string.Join(", ", aliases[e.EntityId].Where(a => a != e.Name.ToLowerInvariant())),
+                descriptions.GetValueOrDefault(e.EntityId)))
             .OrderByDescending(r => r.Facts).ThenBy(r => r.Entity.Name)
             .ToList();
     }

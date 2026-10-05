@@ -1,0 +1,71 @@
+@page "/memory/ask"
+@rendermode InteractiveServer
+
+@using DefinitelyHuman.Data
+@using DefinitelyHuman.Memory
+@using DefinitelyHuman.Web.Components.Memory
+@using Microsoft.EntityFrameworkCore
+
+@inject MemoryService MemoryService
+
+@* Ask memory a question in plain words. The matching facts go to the chat model, which answers
+   from them alone; the facts it used are listed underneath so the answer can be checked. *@
+<div class="page-header">
+    <h2>Ask memory</h2>
+    <span class="tl-where">Answered by the chat model from the stored facts only</span>
+</div>
+
+<div class="page-body mem-page">
+    <form class="mem-filters" @onsubmit="Ask">
+        <input class="mem-question" placeholder="What does the channel think of Godot?" aria-label="Question" @bind="_question" @bind:event="oninput" />
+        <button type="submit" disabled="@(_busy || string.IsNullOrWhiteSpace(_question))">@(_busy ? "Thinking..." : "Ask")</button>
+    </form>
+
+    @if (_answer is not null)
+    {
+        <p class="mem-summary" role="status">@_answer</p>
+        @if (_facts.Count > 0)
+        {
+            <h3>Based on</h3>
+            <FactTable Facts="_facts" Changed="LoadFacts" />
+        }
+    }
+</div>
+
+@code {
+    private string _question = "";
+    private string? _answer;
+    private int[] _factIds = [];
+    private List<FactTable.FactRow> _facts = [];
+    private bool _busy;
+
+    private async Task Ask()
+    {
+        if (_busy || string.IsNullOrWhiteSpace(_question))
+            return;
+
+        _busy = true;
+        try
+        {
+            var answer = await MemoryService.AnswerAsync(_question.Trim());
+            _answer = answer.Text;
+            _factIds = answer.FactIds;
+            await LoadFacts();
+        }
+        catch (Exception ex)
+        {
+            _answer = $"Could not answer: {ex.Message}";
+            _facts = [];
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task LoadFacts()
+    {
+        await using var db = new ChattingContext();
+        _facts = await FactTable.LoadAsync(db, db.Facts.Where(f => _factIds.Contains(f.FactId)), 200);
+    }
+}

@@ -1,4 +1,6 @@
+@using System.Text.RegularExpressions
 @using DefinitelyHuman.Data
+@using DefinitelyHuman.Web.Layout
 @using Microsoft.EntityFrameworkCore
 
 @* A table of facts, shared by the Facts page and an entity's page. Each row can show the chat
@@ -30,7 +32,20 @@ else
                         }
                     </td>
                     <td>
-                        <span class="mem-id">#@fact.FactId</span> @fact.Text
+                        <div class="mem-fact">
+                        <span class="mem-id">#@fact.FactId</span>
+                        <div>
+                        @foreach (var (text, entityId) in row.Parts)
+                        {
+                            @if (entityId is { } id)
+                            {
+                                <a href="memory/entities/@id">@text</a>
+                            }
+                            else
+                            {
+                                @text
+                            }
+                        }
                         @if (fact.InvalidatedAt is { } invalidatedAt)
                         {
                             <div class="mem-note">
@@ -42,7 +57,7 @@ else
                             <div class="mem-evidence">
                                 @foreach (var line in lines)
                                 {
-                                    <div><span class="mem-note">@line.Timestamp.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</span> &lt;@line.Nick&gt; @line.Text</div>
+                                    <div><a class="mem-note" href="c/@ChannelNav.Slug(line.Channel)?line=@line.MessageId" title="Show this line in the timeline">@line.Timestamp.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</a> &lt;@line.Nick&gt; @line.Text</div>
                                 }
                                 @if (lines.Count == 0)
                                 {
@@ -50,6 +65,8 @@ else
                                 }
                             </div>
                         }
+                        </div>
+                        </div>
                     </td>
                     <td class="mem-nowrap">@fact.Source.ToString().ToLowerInvariant()</td>
                     <td class="mem-nowrap mem-actions">
@@ -63,7 +80,8 @@ else
 }
 
 @code {
-    public sealed record FactRow(Fact Fact, string Subject, string? Object);
+    /// <param name="Parts">The fact's text cut up so that every entity named in it can be a link.</param>
+    public sealed record FactRow(Fact Fact, string Subject, string? Object, List<(string Text, int? EntityId)> Parts);
 
     [Parameter, EditorRequired] public IReadOnlyList<FactRow> Facts { get; set; } = [];
 
@@ -78,8 +96,33 @@ else
         var list = await facts.OrderByDescending(f => f.ValidFrom).ThenByDescending(f => f.FactId).Take(take).ToListAsync();
         var ids = list.SelectMany(f => new[] { f.SubjectEntityId, f.ObjectEntityId ?? 0 }).Distinct().ToList();
         var names = await db.Entities.Where(e => ids.Contains(e.EntityId)).ToDictionaryAsync(e => e.EntityId, e => e.Name);
+
+        // Every name of every entity, longest first so "godot engine" wins over "godot". Short
+        // names would match inside ordinary words too often.
+        var aliases = (await db.EntityAliases.ToListAsync()).Where(a => a.Alias.Length >= 3).ToDictionary(a => a.Alias, a => a.EntityId);
+        Regex? mention = aliases.Count == 0 ? null : new Regex(
+            @"(?<![\w#+])(" + string.Join("|", aliases.Keys.OrderByDescending(a => a.Length).Select(Regex.Escape)) + @")(?![\w#+])",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
         return list.Select(f => new FactRow(f, names.GetValueOrDefault(f.SubjectEntityId, "?"),
-            f.ObjectEntityId is { } o ? names.GetValueOrDefault(o, "?") : null)).ToList();
+            f.ObjectEntityId is { } o ? names.GetValueOrDefault(o, "?") : null, Split(f.Text, mention, aliases))).ToList();
+    }
+
+    private static List<(string Text, int? EntityId)> Split(string text, Regex? mention, Dictionary<string, int> aliases)
+    {
+        var parts = new List<(string, int?)>();
+        int at = 0;
+        foreach (Match m in mention?.Matches(text) ?? (IEnumerable<Match>)[])
+        {
+            // The regex's idea of "same letters" is wider than lowercasing; a match that isn't a known name stays plain text.
+            if (!aliases.TryGetValue(m.Value.ToLowerInvariant(), out int entityId))
+                continue;
+            parts.Add((text[at..m.Index], null));
+            parts.Add((m.Value, entityId));
+            at = m.Index + m.Length;
+        }
+        parts.Add((text[at..], null));
+        return parts;
     }
 
     private async Task ToggleEvidence(int factId)

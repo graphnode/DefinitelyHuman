@@ -761,6 +761,25 @@ body {
     font-weight: 400;
 }
 
+.mem-numbers {
+    width: auto;
+}
+
+.mem-numbers th:not(:first-child),
+.mem-numbers td:not(:first-child) {
+    padding-left: 1rem;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.mem-numbers td:nth-child(2):not(:last-child) {
+    text-align: left;
+}
+
+.mem-total td {
+    font-weight: 600;
+}
+
 .mem-nowrap {
     white-space: nowrap;
 }
@@ -780,6 +799,22 @@ body {
 .mem-note,
 .mem-id {
     font-size: 0.75rem;
+}
+
+.mem-arrow {
+    margin: 0 0.35em;
+}
+
+/* The id sits in its own column, so a wrapped fact lines up under its first line */
+.mem-fact {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+}
+
+.mem-fact > div {
+    flex: 1;
+    min-width: 0;
 }
 
 .mem-invalid td {
@@ -815,6 +850,25 @@ body {
     font: inherit;
     font-size: 0.8rem;
     color: var(--text-muted);
+}
+
+.mem-page .mem-question {
+    flex: 1;
+    max-width: 70ch;
+}
+
+.mem-edit {
+    margin-bottom: 0.75rem;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+.mem-edit summary {
+    cursor: pointer;
+}
+
+.mem-edit form {
+    margin: 0.4rem 0 0;
 }
 
 .mem-summary {
@@ -856,11 +910,28 @@ body {
     text-decoration: underline;
 }
 
-.mem-graph .mem-graph-self { fill: var(--accent); font-weight: 600; }
-.mem-graph .mem-graph-person { fill: var(--green); }
-.mem-graph .mem-graph-project { fill: var(--orange); }
-.mem-graph .mem-graph-tool { fill: var(--cyan); }
-.mem-graph .mem-graph-place { fill: var(--red); }
+.mem-graph-self { fill: var(--accent); font-weight: 600; }
+.mem-graph-person { fill: var(--green); }
+.mem-graph-project { fill: var(--orange); }
+.mem-graph-tool { fill: var(--cyan); }
+.mem-graph-place { fill: var(--red); }
+.mem-graph-topic,
+.mem-graph-other { fill: var(--text-muted); }
+
+.mem-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 1rem;
+    margin-top: 0.4rem;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.mem-legend svg {
+    width: 0.6rem;
+    height: 0.6rem;
+    margin-right: 0.3rem;
+}
 
 .settings {
     display: flex;

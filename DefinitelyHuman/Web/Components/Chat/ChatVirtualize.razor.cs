@@ -253,6 +253,9 @@ public sealed partial class ChatVirtualize<TItem> : IAsyncDisposable
         StateHasChanged();
     }
 
+    /// <summary>Whether the list has set itself up and has items, so it can be scrolled.</summary>
+    public bool IsReady => _jsReady && TotalItemCount > 0;
+
     /// <summary>Brings the item at <paramref name="index"/> to the middle of the view and flashes it.</summary>
     public async Task ScrollToIndexAsync(int index)
     {

@@ -65,12 +65,14 @@
         (AppSettings.ChatModel, "Channel chatting", "Reads the channel and decides whether and what to say. Called often, so a fast model."),
         (AppSettings.ExtractionModel, "Memory extraction", "Reads new chat lines and writes down facts. One call per conversation."),
         (AppSettings.CurationModel, "Memory curation", "Nightly: merges, invalidates and draws conclusions. Few calls, where judgment matters most."),
+        (AppSettings.DescriptionModel, "Entity lookup", "Searches the web once for what a project, tool, place or topic is. One call per entity."),
     ];
 
     private static readonly (string Key, string Label, string Hint)[] Switches =
     [
         (AppSettings.ExtractionEnabled, "Extract facts from the chat log", "Off: new lines wait unread and are picked up when it is switched back on."),
         (AppSettings.CurationEnabled, "Curate nightly", "After 04:00 UTC. \"Curate now\" on the runs page works either way."),
+        (AppSettings.DescriptionEnabled, "Look up what things are on the web", "Projects, tools, places and topics only, never people. One or two searches each (about a cent per search, plus tokens)."),
         (AppSettings.RecallEnabled, "Let the bot use its memory when chatting", "Off: memory is still built, but the chat model never sees it."),
     ];
 

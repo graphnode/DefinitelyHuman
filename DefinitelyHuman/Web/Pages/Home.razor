@@ -139,7 +139,42 @@
     /// <summary>The channel in the URL (see <see cref="ChannelNav.Slug"/>); none means the bot's own channel.</summary>
     [Parameter] public string? ChannelSlug { get; set; }
 
+    /// <summary>A chat line to jump to on arrival (its MessageId), as linked from a fact's evidence.</summary>
+    [SupplyParameterFromQuery(Name = "line")] public int? Line { get; set; }
+
     private string _channel = "";
+    private int? _jumpedTo;
+    private bool _disposed;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (Line is not { } line || _jumpedTo == line || _virtualizer is null)
+            return;
+        _jumpedTo = line;
+
+        // The list sets itself up after its own first render, and starts at the bottom.
+        for (int i = 0; i < 50 && !_virtualizer.IsReady && !_disposed; i++)
+            await Task.Delay(100);
+        await Task.Delay(300);
+        if (_disposed)
+            return; // the page was left while waiting
+
+        await using var conn = new SqliteConnection($"Data Source={DbPath}");
+        await conn.OpenAsync();
+        int index = Convert.ToInt32(await Exec(conn, """
+            SELECT COUNT(*) FROM Messages WHERE Channel = @ch
+              AND Timestamp <= (SELECT Timestamp FROM Messages WHERE MessageId = @id AND Channel = @ch)
+            """, ("@ch", _channel), ("@id", line))) - 1;
+        try
+        {
+            if (index >= 0 && !_disposed)
+                await _virtualizer.ScrollToIndexAsync(index);
+        }
+        catch (Exception ex) when (ex is JSDisconnectedException or ObjectDisposedException)
+        {
+            // Left in the last moment; there is nothing to scroll any more.
+        }
+    }
 
     protected override void OnParametersSet()
     {
@@ -530,6 +565,7 @@
 
     public void Dispose()
     {
+        _disposed = true;
         Bot.MessageLogged -= OnMessageLogged;
         AgentLog.Updated -= OnAgentUpdated;
         Previews.PreviewReady -= OnPreviewReady;

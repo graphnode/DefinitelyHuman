@@ -1,0 +1,110 @@
+@page "/usage"
+@rendermode InteractiveServer
+
+@using DefinitelyHuman.Agent
+@using DefinitelyHuman.Data
+@using Microsoft.EntityFrameworkCore
+
+@* What the bot's model calls cost, by job and by day, from its own count of tokens at list
+   prices. An estimate: the Anthropic console has the bill. *@
+<div class="page-header">
+    <h2>Usage</h2>
+    <span class="tl-where">Estimated from the bot's own token counts at list prices; the Anthropic console has the real bill</span>
+</div>
+
+<div class="page-body mem-page">
+    @if (_calls.Count == 0)
+    {
+        <p class="mem-empty">No model calls recorded yet.</p>
+    }
+    else
+    {
+        <h3>By job</h3>
+        <table class="mem-table mem-numbers">
+            <thead>
+                <tr><th>Job</th><th>Model</th><th>Calls</th><th>Tokens in</th><th>Tokens out</th><th>Web searches</th><th>Cost</th></tr>
+            </thead>
+            <tbody>
+                @foreach (var g in _calls.GroupBy(c => (c.Job, c.Model)).OrderByDescending(g => g.Sum(c => c.Cost ?? 0)))
+                {
+                    <tr>
+                        <td>@g.Key.Job</td>
+                        <td>@g.Key.Model</td>
+                        <td>@g.Sum(c => c.Calls).ToString("N0")</td>
+                        <td>@g.Sum(c => c.Input).ToString("N0")</td>
+                        <td>@g.Sum(c => c.Output).ToString("N0")</td>
+                        <td>@g.Sum(c => c.Searches).ToString("N0")</td>
+                        <td>@Money(g)</td>
+                    </tr>
+                }
+                <tr class="mem-total">
+                    <td>Total</td><td></td>
+                    <td>@_calls.Sum(c => c.Calls).ToString("N0")</td>
+                    <td>@_calls.Sum(c => c.Input).ToString("N0")</td>
+                    <td>@_calls.Sum(c => c.Output).ToString("N0")</td>
+                    <td>@_calls.Sum(c => c.Searches).ToString("N0")</td>
+                    <td>@Money(_calls)</td>
+                </tr>
+            </tbody>
+        </table>
+        @if (_calls.Any(c => c.Cost is null))
+        {
+            <p class="mem-note">A "?" marks a model with no price in <code>UsageLog.Prices</code>; its calls are left out of the totals.</p>
+        }
+
+        <h3>By day</h3>
+        <table class="mem-table mem-numbers">
+            <thead>
+                <tr>
+                    <th>Day</th>
+                    @foreach (string job in _jobs)
+                    {
+                        <th>@job</th>
+                    }
+                    <th>Total</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var day in _calls.GroupBy(c => c.Day).OrderByDescending(g => g.Key).Take(MaxDays))
+                {
+                    <tr>
+                        <td>@day.Key.ToString("yyyy-MM-dd")</td>
+                        @foreach (string job in _jobs)
+                        {
+                            <td>@(day.Any(c => c.Job == job) ? Money(day.Where(c => c.Job == job)) : "")</td>
+                        }
+                        <td>@Money(day)</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</div>
+
+@code {
+    private const int MaxDays = 90;
+
+    private sealed record Call(DateOnly Day, string Job, string Model, int Calls, long Input, long Output, int Searches, decimal? Cost);
+
+    private List<Call> _calls = [];
+    private List<string> _jobs = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = new ChattingContext();
+        // ponytail: every row is loaded and summed here; group in SQL when there are too many.
+        var usage = await db.ModelUsage.ToListAsync();
+        _calls = usage.Select(u => new Call(Day(u.At), u.Job, u.Model, 1, u.InputTokens, u.OutputTokens, u.WebSearches,
+            UsageLog.Cost(u.Model, u.InputTokens, u.OutputTokens, u.WebSearches))).ToList();
+
+        _jobs = _calls.Select(c => c.Job).Distinct().Order().ToList();
+    }
+
+    private static DateOnly Day(DateTime utc) => DateOnly.FromDateTime(DateTime.SpecifyKind(utc, DateTimeKind.Utc).ToLocalTime());
+
+    private static string Money(IEnumerable<Call> calls)
+    {
+        var priced = calls.Where(c => c.Cost is not null).ToList();
+        return priced.Count == 0 ? "?" : "$" + priced.Sum(c => c.Cost!.Value).ToString("0.000");
+    }
+}
