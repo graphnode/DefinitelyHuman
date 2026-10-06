@@ -207,7 +207,14 @@ public class IrcBot : IDisposable
             var sb = new StringBuilder();
             if (earlier.Count > 0)
             {
-                sb.AppendLine("Earlier, already read:");
+                // How old the earlier exchange is: the model can't tell a chat from a minute ago
+                // from yesterday's otherwise (it decides whether it is tired of someone from this).
+                var age = DateTime.UtcNow - earlier[^1].Timestamp;
+                string ago = age.TotalMinutes < 2 ? "just now"
+                    : age.TotalHours < 1 ? $"{age.TotalMinutes:F0} minutes ago"
+                    : age.TotalDays < 1 ? $"{age.TotalHours:F0} hours ago"
+                    : $"{age.TotalDays:F0} days ago";
+                sb.AppendLine($"Earlier, already read (the last of these was {ago}):");
                 foreach (var m in earlier)
                     sb.AppendLine($"<{m.Nick}> {m.Text}");
                 sb.AppendLine();
