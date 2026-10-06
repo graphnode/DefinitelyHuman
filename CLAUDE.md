@@ -159,6 +159,7 @@ Production runs on a Linux server behind a [soju](https://soju.im) bouncer, whic
 
 - soju listens on `localhost:6667` for the bot; the bot logs in with `IRC_USERNAME=<soju user>/<network>` and `IRC_PASSWORD=<soju password>`. soju handles the network login (SASL) and rejoins saved channels.
 - The bot runs as a systemd service from a framework-dependent `dotnet publish -c Release` output (needs the ASP.NET Core 10 runtime), with settings supplied as environment variables rather than a `.env` file.
+- **Every push to `master` deploys** (`.github/workflows/deploy.yml`): the workflow publishes and pipes a tar of the output over SSH. Its key (secret `DEPLOY_SSH_KEY`, with `DEPLOY_HOST` and `DEPLOY_KNOWN_HOSTS`) is pinned in root's `authorized_keys` to a forced command, `/usr/local/sbin/definitelyhuman-deploy` (a copy of `Scripts/deploy-receive.sh`), so it can only unpack a build and restart the service. Pre-release work goes on feature branches. A restart resets focus and the unread bookmarks.
 - The dashboard binds to `127.0.0.1:5000` there and has no authentication — reach it over an SSH tunnel, never expose it.
 
 ## Dependencies
