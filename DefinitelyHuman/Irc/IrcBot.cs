@@ -228,28 +228,40 @@ public class IrcBot : IDisposable
         }
     }
 
-    /// <summary>Sends a reply to a channel; returns the logged message's id, or 0 if discarded.</summary>
-    public async Task<int> SendMessageAsync(string channel, string text)
+    /// <summary>
+    /// Sends a reply to a channel; returns the logged message's id (0 if logging it failed), or
+    /// null if nothing was sent.
+    /// </summary>
+    public async Task<int?> SendMessageAsync(string channel, string text)
     {
         if (string.IsNullOrEmpty(text))
-            return 0;
+            return null;
 
         // The agent doesn't send here in the first place; this and the connection filter are the backstops.
         if (IsReadOnly(channel))
         {
             _logger.LogWarning("Refused to send to read-only channel {Channel}.", channel);
-            return 0;
+            return null;
         }
 
         if (text.Length > MaxReplyLength)
         {
             _logger.LogWarning("Agent error: Reply too long ({TextLength} chars), discarding.", text.Length);
-            return 0;
+            return null;
         }
 
         int charsPerSecond = _rng.Next(4, 8);
         int typingDelay = (text.Length / charsPerSecond) * 1000 + _rng.Next(500, 1500);
         await Task.Delay(typingDelay);
+
+        // Checked after the typing delay: a kick can land while the reply is being "typed".
+        bool joined;
+        lock (_joined) joined = _joined.Contains(channel);
+        if (!joined)
+        {
+            _logger.LogWarning("Not in {Channel} (kicked, parted or disconnected), discarding reply.", channel);
+            return null;
+        }
 
         _logger.LogInformation("[{Channel}] <{Nick}> {Text}", channel, _options.Nick, text);
         await _client.SendAsync(new PrivMsgMessage(channel, text));

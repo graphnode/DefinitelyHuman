@@ -59,7 +59,7 @@ public class ChatAgent
     // reply to a channel. _send returns the new message's id so a "replied" event can link to
     // the line it produced.
     private Func<string, DateTime, Task<string>>? _readLog;
-    private Func<string, string, Task<int>>? _send;
+    private Func<string, string, Task<int?>>? _send;
     private Func<string, bool> _isReadOnly = _ => false;
     private Func<string, Task<string>>? _recall;
 
@@ -150,10 +150,10 @@ public class ChatAgent
 
     /// <summary>Wires the channel I/O: how to read a channel's recent log and how to send a reply to it.</summary>
     /// <param name="readLog">Returns a channel's log since the given timestamp (already capped).</param>
-    /// <param name="send">Sends a reply to a channel and returns its new message id.</param>
+    /// <param name="send">Sends a reply to a channel and returns its new message id, or null if nothing was sent.</param>
     /// <param name="isReadOnly">True for channels the bot must never write to (shadow mode).</param>
     /// <param name="recall">Returns what long-term memory holds about the people and things in a log, or "".</param>
-    public void Bind(Func<string, DateTime, Task<string>> readLog, Func<string, string, Task<int>> send,
+    public void Bind(Func<string, DateTime, Task<string>> readLog, Func<string, string, Task<int?>> send,
         Func<string, bool> isReadOnly, Func<string, Task<string>> recall)
     {
         _readLog = readLog;
@@ -356,9 +356,11 @@ public class ChatAgent
 
             // Actually engaging — this is the "really focused" moment, so advance this channel's
             // bookmark, make it the conversation, and refresh focus before sending.
+            string? previousConversation;
             lock (_glanceLock)
             {
                 state.LastFocusedAt = DateTime.UtcNow;
+                previousConversation = _conversationChannel;
                 _conversationChannel = channel;
             }
             _attention.Engaged();
@@ -366,7 +368,23 @@ public class ChatAgent
             // Stamp the decision just before the reply lands, then link it to the message it
             // produced so the timeline can attach the reasoning to the chat line.
             var decidedAt = DateTime.UtcNow;
-            int messageId = _send is not null ? await _send(channel, reply) : 0;
+            int? messageId = _send is not null ? await _send(channel, reply) : null;
+
+            // Nothing went out (kicked, too long): nobody saw a reply, so this is not the
+            // conversation. The bookmark stays advanced so the same lines aren't answered again.
+            if (messageId is null)
+            {
+                lock (_glanceLock)
+                {
+                    if (_conversationChannel == channel)
+                        _conversationChannel = previousConversation;
+                }
+                _agentLog.Log(channel, AgentEventKind.Decision,
+                    $"reply not sent: \"{reply}\" ({mode}, focus {focus:F2})", detail: notes, at: decidedAt);
+                LogConsole($"[{channel}] glanced ({mode}, focus {focus:F2}) — reply not sent: \"{reply}\"");
+                return;
+            }
+
             _agentLog.Log(channel, AgentEventKind.Decision, $"replied ({mode}, focus {focus:F2})",
                 detail: string.IsNullOrWhiteSpace(notes) ? reply : notes, messageId: messageId > 0 ? messageId : null, at: decidedAt);
             LogConsole($"[{channel}] glanced ({mode}, focus {focus:F2}) — replied: \"{reply}\"");

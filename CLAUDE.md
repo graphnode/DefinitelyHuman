@@ -142,7 +142,7 @@ Inspired by mem0 and Zep/Graphiti, all in the same SQLite file: **entities** (pe
 - `Home` takes `?line={MessageId}` and scrolls to that chat line once the list is ready (used by the evidence links on the memory pages).
 - The timeline is paged from SQLite through `ChatVirtualize`'s `ItemsProvider` (a UNION of `Messages` and `AgentEvents` ordered by timestamp).
 - Typing delay simulates human speed (4–8 chars/sec + random pause).
-- Replies over 400 chars are discarded (IRC message limit).
+- Replies over 400 chars are discarded (IRC message limit), and so is a reply to a channel the bot is no longer in (kicked while "typing"). `IrcBot.SendMessageAsync` returns null for both and the agent logs `reply not sent: "..."` instead of "replied".
 
 ### Tuning knobs
 
