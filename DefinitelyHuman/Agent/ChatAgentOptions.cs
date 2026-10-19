@@ -18,4 +18,7 @@ public struct ChatAgentOptions
     /// If true, the agent will echo its decision log + thinking to the console. The dashboard log is captured regardless.
     /// </summary>
     public bool LogReasoning { get; set; }
+
+    /// <summary>Scales the human pause before a mention or follow-up is read: 1 = human, 0 = as fast as the debounce allows.</summary>
+    public double DelayScale { get; set; }
 }

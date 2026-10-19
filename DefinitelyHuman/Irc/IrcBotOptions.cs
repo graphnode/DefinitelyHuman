@@ -29,6 +29,9 @@ public struct IrcBotOptions
         set => field = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 
+    /// <summary>Scales the simulated typing time of a reply: 1 = human speed, 0 = none.</summary>
+    public double DelayScale { get; set; }
+
     /// <summary>
     /// Channels the bot may sit in and read but must never write to. There it runs in shadow
     /// mode: it decides as usual, and what it would have said is only recorded.

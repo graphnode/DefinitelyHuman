@@ -8,6 +8,10 @@ using LinkPreviewService = DefinitelyHuman.Utilities.LinkPreviewService;
 
 DotEnv.Load();
 
+// 1 = human pacing (notice and typing delays), 0 = reply as soon as the model answers.
+double delayScale = double.TryParse(Environment.GetEnvironmentVariable("REPLY_DELAY_SCALE"),
+    System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double scale) ? scale : 0;
+
 await using var db = new ChattingContext();
 db.EnsureSchema();
 
@@ -19,7 +23,8 @@ var ircBotOptions = new IrcBotOptions
     Channel = Environment.GetEnvironmentVariable("IRC_CHANNEL") ?? "#clankersunite",
     Password = Environment.GetEnvironmentVariable("IRC_PASSWORD"),
     Username = Environment.GetEnvironmentVariable("IRC_USERNAME"),
-    ReadOnlyChannels = IrcBotOptions.ParseChannels(Environment.GetEnvironmentVariable("IRC_READONLY_CHANNELS"))
+    ReadOnlyChannels = IrcBotOptions.ParseChannels(Environment.GetEnvironmentVariable("IRC_READONLY_CHANNELS")),
+    DelayScale = delayScale
 };
 
 var chatAgentOptions = new ChatAgentOptions
@@ -27,6 +32,7 @@ var chatAgentOptions = new ChatAgentOptions
     ApiKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY") ?? throw new InvalidOperationException("Set ANTHROPIC_API_KEY in .env or environment."),
     Model = Environment.GetEnvironmentVariable("ANTHROPIC_MODEL") ?? "claude-haiku-4-5-20251001",
     Nick = ircBotOptions.Nick,
+    DelayScale = delayScale,
 };
 
 var builder = WebApplication.CreateBuilder(args);

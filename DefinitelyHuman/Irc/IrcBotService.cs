@@ -24,7 +24,8 @@ public class IrcBotService(IrcBot bot, ChatAgent agent, LinkPreviewService previ
                 await bot.ReadLogSinceAsync(channel, since, MaxBacklog, ContextTail), LinkPreviewWait),
             send: bot.SendMessageAsync,
             isReadOnly: bot.IsReadOnly,
-            recall: memory.RecallAsync);
+            recall: memory.RecallAsync,
+            lastSeen: nick => bot.LastSeenAsync(nick));
 
         // A nick change is proof that two names are one person, so memory keeps both.
         bot.NickChanged += (oldNick, newNick) => _ = memory.AddAliasAsync(oldNick, newNick);

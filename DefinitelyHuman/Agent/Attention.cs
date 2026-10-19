@@ -13,6 +13,7 @@ public sealed class Attention
     private readonly double _halfLifeMinutes;
     private readonly double _glanceFloor;
     private readonly double _engagedFocus;
+    private readonly double _delayScale;
     private readonly Random _rng;
     private readonly object _gate = new();
 
@@ -22,9 +23,11 @@ public sealed class Attention
     /// <param name="halfLifeMinutes">Time for focus to halve. Lower = more easily distracted.</param>
     /// <param name="glanceFloor">Below this focus, ambient messages are never noticed.</param>
     /// <param name="engagedFocus">Focus restored when the bot actually replies.</param>
+    /// <param name="delayScale">Scales the mention delay: 1 = human, 0 = only the debounce floor.</param>
     public Attention(double halfLifeMinutes = 4.0, double glanceFloor = 0.15,
-                     double engagedFocus = 0.9, Random? rng = null)
+                     double engagedFocus = 0.9, double delayScale = 1.0, Random? rng = null)
     {
+        _delayScale = delayScale;
         _halfLifeMinutes = halfLifeMinutes;
         _glanceFloor = glanceFloor;
         _engagedFocus = engagedFocus;
@@ -64,9 +67,10 @@ public sealed class Attention
 
     /// <summary>
     /// Padding after a direct mention — you're already watching the channel, so it's just the
-    /// moment it takes to read the line before typing. 1–4 seconds.
+    /// moment it takes to read the line before typing. 1–4 seconds, scaled; never under half a
+    /// second, which is the debounce that folds "hey bot" + the question into one reply.
     /// </summary>
-    public TimeSpan MentionNoticeDelay() => TimeSpan.FromSeconds(1 + _rng.NextDouble() * 3);
+    public TimeSpan MentionNoticeDelay() => TimeSpan.FromSeconds(Math.Max(0.5, (1 + _rng.NextDouble() * 3) * _delayScale));
 
     /// <summary>
     /// How long until you glance over at an ambient message: quick when focused, up to ~2

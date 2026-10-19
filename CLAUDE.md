@@ -24,6 +24,7 @@ Settings are loaded from `.env` in the working directory via `dotenv.net` (gitig
 - `IRC_HOST` (default `localhost`), `IRC_PORT` (default `6667`), `IRC_CHANNEL` (default `#clankersunite`; the home channel, joined on connect), `IRC_NICK` (default `DefinitelyHuman`)
 - `IRC_PASSWORD` (optional) — sent as the IRC server password (`PASS`); blank/absent means none. NetIRC has no SASL support.
 - `IRC_READONLY_CHANNELS` (optional) - comma-separated channels the bot may join and read but must never write to (shadow mode, see below).
+- `REPLY_DELAY_SCALE` (default `0`) - scales the human pacing: the 1–4s pause before a mention/follow-up glance (never under 0.5s, the debounce) and the typing delay. `1` = human, `0` = reply as soon as the model answers. Ambient glance delays are not scaled.
 - `IRC_USERNAME` (optional) — IRC username sent at registration, when it must differ from the nick. soju needs `user/network` here; blank means NetIRC's default (the nick).
 
 The csproj copies `.env` to the build/publish output — **remove it from a publish before uploading anywhere**.
@@ -110,7 +111,9 @@ The bot is **state-driven, not event-driven**: it does not react to individual m
 
 **Read-only channels (shadow mode)**: in a channel listed in `IRC_READONLY_CHANNELS` the bot glances and asks the model as usual, but a reply is only recorded as a `would have replied: "..."` event. The channel's bookmark still advances, but it never becomes the conversation channel and the reply does not refresh focus. The guarantee does not rest on the agent: `OutgoingFilterConnection.WritesTo` drops any PRIVMSG/NOTICE/TAGMSG/TOPIC/KICK/MODE/INVITE aimed at a read-only channel at the last point before the socket (and logs a warning), and `IrcBot.SendMessageAsync` refuses as well. Set the variable before joining such a channel.
 
-Not implemented: tools (the `ToolCall` event kind is reserved), private messages.
+**Tools**: the glance has one function tool, `last_seen(nick)` (`IrcBot.LastSeenAsync`, bound through `Bind`): the nick's last 3 lines with ages and channels, never from a read-only channel. The system prompt says to call it only when asked about someone, and to give the gist in its own words, never quote. Each call is a `ToolCall` event in the timeline. The tool is attached per glance (a clone of the chat options), so the event lands in that glance's channel.
+
+Not implemented: private messages.
 
 ## Long-term memory
 
@@ -141,7 +144,7 @@ Inspired by mem0 and Zep/Graphiti, all in the same SQLite file: **entities** (pe
 - **Sidebar status is deliberately modest**: the dot is only `IrcBot.IsConnected` (our link to `IrcBot.Endpoint`, which in production is the bouncer, not the network). `IrcBot.LastLineAt` ("last line Nm ago") is the evidence that the channel is actually reaching the bot.
 - `Home` takes `?line={MessageId}` and scrolls to that chat line once the list is ready (used by the evidence links on the memory pages).
 - The timeline is paged from SQLite through `ChatVirtualize`'s `ItemsProvider` (a UNION of `Messages` and `AgentEvents` ordered by timestamp).
-- Typing delay simulates human speed (4–8 chars/sec + random pause).
+- Typing delay simulates human speed (4–8 chars/sec + random pause), multiplied by `REPLY_DELAY_SCALE` (off by default).
 - Replies over 400 chars are discarded (IRC message limit), and so is a reply to a channel the bot is no longer in (kicked while "typing"). `IrcBot.SendMessageAsync` returns null for both and the agent logs `reply not sent: "..."` instead of "replied".
 
 ### Tuning knobs
