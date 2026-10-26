@@ -113,6 +113,16 @@
     </ChatVirtualize>
 </div>
 
+@* Say something as the bot, by hand. It goes through the same send path as the agent's replies. *@
+<form class="tl-compose" @onsubmit="Send">
+    <input type="text" maxlength="@IrcBot.MaxReplyLength" autocomplete="off"
+           aria-label="@($"Message {_channel} as {Bot.Nick}")"
+           placeholder="@(CanSend ? $"Message {_channel} as {Bot.Nick}" : SendBlocked)"
+           disabled="@(!CanSend)" @bind="_draft" @bind:event="oninput" />
+    <button type="submit" disabled="@(!CanSend || string.IsNullOrWhiteSpace(_draft) || _sending)">Send</button>
+    <span class="tl-step-note" role="status">@_sendNote</span>
+</form>
+
 @if (!_atBottom)
 {
     <button type="button" class="tl-latest" title="Jump to latest (End)" @onclick="JumpToLatest">
@@ -193,11 +203,13 @@
         Bot.MessageLogged += OnMessageLogged;
         AgentLog.Updated += OnAgentUpdated;
         Previews.PreviewReady += OnPreviewReady;
+        Bot.ChannelsChanged += OnChannelsChanged;
     }
 
     private Task OnMessageLogged() { OnChanged(newLine: true); return Task.CompletedTask; }
     private void OnAgentUpdated() => OnChanged(newLine: false);
     private void OnPreviewReady() => _ = InvokeAsync(StateHasChanged);
+    private void OnChannelsChanged() => _ = InvokeAsync(StateHasChanged);
 
     private void OnChanged(bool newLine) => _ = InvokeAsync(async () =>
     {
@@ -296,6 +308,40 @@
         _stepNote = "";
         int index = Convert.ToInt32(await Exec(conn, "SELECT COUNT(*) FROM Messages WHERE Channel = @ch AND Timestamp <= @t", ("@ch", _channel), ("@t", at))) - 1;
         await _virtualizer.ScrollToIndexAsync(Math.Max(0, index));
+    }
+
+    // ------------------------------------------------------------------ Sending by hand
+
+    private string _draft = "";
+    private string _sendNote = "";
+    private bool _sending;
+
+    private string? SendBlocked =>
+        Bot.IsReadOnly(_channel) ? $"{_channel} is read-only"
+        : !Bot.JoinedChannels.Contains(_channel) ? $"Not in {_channel}"
+        : null;
+
+    private bool CanSend => SendBlocked is null;
+
+    private async Task Send()
+    {
+        string text = _draft.Trim();
+        if (text.Length == 0 || _sending || !CanSend)
+            return;
+
+        _sending = true;
+        _sendNote = "";
+        try
+        {
+            if (await Bot.SendMessageAsync(_channel, text, simulateTyping: false) is null)
+                _sendNote = "Not sent";
+            else
+                _draft = "";
+        }
+        finally
+        {
+            _sending = false;
+        }
     }
 
     // ------------------------------------------------------------------ ItemsProvider
@@ -569,5 +615,6 @@
         Bot.MessageLogged -= OnMessageLogged;
         AgentLog.Updated -= OnAgentUpdated;
         Previews.PreviewReady -= OnPreviewReady;
+        Bot.ChannelsChanged -= OnChannelsChanged;
     }
 }

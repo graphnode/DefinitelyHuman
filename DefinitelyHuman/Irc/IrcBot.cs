@@ -15,7 +15,7 @@ public class IrcBot : IDisposable
     private readonly IrcBotOptions _options;
     private readonly ILogger<IrcBot> _logger;
 
-    private const int MaxReplyLength = 400;
+    public const int MaxReplyLength = 400;
 
     // A bouncer replays what we missed in a burst right after we connect, with no timestamps.
     // Anything arriving inside this window is logged but doesn't nudge the agent.
@@ -274,9 +274,9 @@ public class IrcBot : IDisposable
 
     /// <summary>
     /// Sends a reply to a channel; returns the logged message's id (0 if logging it failed), or
-    /// null if nothing was sent.
+    /// null if nothing was sent. A line typed on the dashboard skips the simulated typing delay.
     /// </summary>
-    public async Task<int?> SendMessageAsync(string channel, string text)
+    public async Task<int?> SendMessageAsync(string channel, string text, bool simulateTyping = true)
     {
         if (string.IsNullOrEmpty(text))
             return null;
@@ -296,7 +296,7 @@ public class IrcBot : IDisposable
 
         int charsPerSecond = _rng.Next(4, 8);
         int typingDelay = (int)(((text.Length / charsPerSecond) * 1000 + _rng.Next(500, 1500)) * _options.DelayScale);
-        if (typingDelay > 0)
+        if (simulateTyping && typingDelay > 0)
             await Task.Delay(typingDelay);
 
         // Checked after the typing delay: a kick can land while the reply is being "typed".

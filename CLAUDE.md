@@ -75,7 +75,7 @@ DefinitelyHuman/
     Components/Chat/
       ChatVirtualize.razor(.cs/.js) — bottom-anchored virtualized list with per-item height tracking, jump-to-index and at-bottom notifications
     Pages/
-      Home.razor           — the timeline of one channel (`/` = the bot's channel, `/c/{slug}` = any logged channel): chat lines and agent events merged by timestamp, with link previews, find and decision stepping
+      Home.razor           — the timeline of one channel (`/` = the bot's channel, `/c/{slug}` = any logged channel): chat lines and agent events merged by timestamp, with link previews, find and decision stepping, and a box to send a line as the bot by hand
       MemoryFacts.razor    — `/memory`: filterable table of facts
       MemoryEntities.razor, MemoryEntity.razor — entity list; one entity's profile, connection graph (inline SVG), facts, links, merge
       MemoryAsk.razor      — `/memory/ask`: a question answered by the chat model from the matching facts, which are listed under it

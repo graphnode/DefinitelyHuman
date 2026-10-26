@@ -22,7 +22,7 @@ public class IrcBotService(IrcBot bot, ChatAgent agent, LinkPreviewService previ
         agent.Bind(
             readLog: async (channel, since) => await previews.AnnotateAsync(
                 await bot.ReadLogSinceAsync(channel, since, MaxBacklog, ContextTail), LinkPreviewWait),
-            send: bot.SendMessageAsync,
+            send: (channel, text) => bot.SendMessageAsync(channel, text),
             isReadOnly: bot.IsReadOnly,
             recall: memory.RecallAsync,
             lastSeen: nick => bot.LastSeenAsync(nick));
